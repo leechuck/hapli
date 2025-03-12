@@ -1,18 +1,20 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
-Generate a comprehensive variant effect report by analyzing GFA and GFF3 files.
-This script identifies and reports all functional effects of variants on genomic features.
+GFA Variant Effect Analyzer
 
-Author: Claude
-Date: 2025-03-11
+Analyzes variants in GFA files with sample haplotype information and reports their effects 
+on genomic features defined in GFF3 files.
+
+Usage:
+    python gfa_variant_analyzer.py out.gfa test.gff3 --output variant_report.txt
 """
 
 import argparse
-import re
 import sys
 import os
 import logging
 import time
+import re
 from collections import defaultdict, Counter
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -54,62 +56,22 @@ def setup_logging(debug=False, log_file=None, verbose=False):
     return logger
 
 def parse_gfa(gfa_file):
-    """Parse a GFA file into segments, links, paths, and extract variant information."""
+    """Parse a GFA file and extract segments, paths, and variant information."""
     segments = {}
     links = []
     paths = {}
     variants = []
+    samples = defaultdict(list)
+    haplotypes = defaultdict(dict)
     
     start_time = time.time()
     logging.info(f"Parsing GFA file: {gfa_file}")
     
+    # First pass: collect segment information
     with open(gfa_file, 'r') as f:
-        in_variant_annotations = False
-        
         for line_num, line in enumerate(f, 1):
             line = line.strip()
-            if not line:
-                continue
-                
-            # Parse variant annotations from comments
-            if line.startswith('# Variant Annotations'):
-                in_variant_annotations = True
-                continue
-            elif line.startswith('# End of Variant Annotations'):
-                in_variant_annotations = False
-                continue
-            elif in_variant_annotations and line.startswith('# VAR'):
-                # Extract variant information from comment line
-                parts = line.split('\t')
-                if len(parts) >= 6:
-                    var_id = parts[1]
-                    var_type = parts[2]
-                    pos = int(parts[3])
-                    ref = parts[4]
-                    alt = parts[5]
-                    
-                    # Parse additional info if available
-                    info = {}
-                    if len(parts) > 6:
-                        for item in parts[6:]:
-                            if '=' in item:
-                                key, value = item.split('=', 1)
-                                info[key] = value
-                    
-                    variant = {
-                        'id': var_id,
-                        'type': var_type,
-                        'pos': pos,
-                        'ref': ref,
-                        'alt': alt,
-                        'info': info,
-                        'end': pos + len(ref) - 1,
-                        'length_change': len(alt) - len(ref)
-                    }
-                    
-                    variants.append(variant)
-                continue
-            elif line.startswith('#'):
+            if not line or line.startswith('#'):
                 continue
                 
             fields = line.split('\t')
@@ -123,7 +85,12 @@ def parse_gfa(gfa_file):
                 seg_id = fields[1]
                 sequence = fields[2]
                 
-                # Extract optional tags if present
+                # Extract variant info from segment name
+                var_id = None
+                var_type = None
+                length_change = 0
+                
+                # Extract optional tags
                 tags = {}
                 for field in fields[3:]:
                     if ':' in field:
@@ -132,54 +99,66 @@ def parse_gfa(gfa_file):
                             tag_name, tag_type, tag_value = tag_parts
                             tags[tag_name] = (tag_type, tag_value)
                 
-                # Extract variant information from segment tags
-                var_info = []
-                if 'VA' in tags and tags['VA'][0] == 'Z':
-                    var_ids = tags['VA'][1].split(';')
+                # Check if segment name contains variant info (e.g., S25_VAR16)
+                if '_VAR' in seg_id:
+                    parts = seg_id.split('_VAR')
+                    if len(parts) > 1:
+                        # The original segment ID is the part before _VAR
+                        orig_seg_id = parts[0]
+                        # Extract variant ID from segment name
+                        var_id = 'VAR' + parts[1].split('_')[0]  # Handle multiple VAR tags
                     
-                    # Look for variant details in tags
-                    for i in range(1, 10):  # Assume maximum 9 variants per segment
-                        var_prefix = f"V{i}"
-                        
-                        if f"{var_prefix}ID" in tags and tags[f"{var_prefix}ID"][0] == 'Z':
-                            var_id = tags[f"{var_prefix}ID"][1]
-                            var_type = tags.get(f"{var_prefix}TYPE", ('Z', 'UNKNOWN'))[1]
-                            var_pos = int(tags.get(f"{var_prefix}POS", ('i', '0'))[1])
-                            var_ref = tags.get(f"{var_prefix}REF", ('Z', ''))[1]
-                            var_alt = tags.get(f"{var_prefix}ALT", ('Z', ''))[1]
-                            
-                            var_detail = {
-                                'id': var_id,
-                                'type': var_type,
-                                'pos': var_pos,
-                                'ref': var_ref,
-                                'alt': var_alt,
-                                'end': var_pos + len(var_ref) - 1,
-                                'length_change': len(var_alt) - len(var_ref)
-                            }
-                            
-                            var_info.append(var_detail)
-                            
-                            # Add to global variants if not already present
-                            if not any(v['id'] == var_id for v in variants):
-                                variants.append(var_detail)
-                        else:
-                            break
+                    # Try to infer variant type from segment name or tags
+                    if "SNP" in seg_id or "SNV" in seg_id:
+                        var_type = "SNP"
+                    elif "DEL" in seg_id:
+                        var_type = "DEL"
+                    elif "INS" in seg_id:
+                        var_type = "INS"
+                    elif "DUP" in seg_id:
+                        var_type = "DUP"
+                    elif "INV" in seg_id:
+                        var_type = "INV"
                 
+                # Extract variant info from tags
+                if 'VA' in tags and tags['VA'][0] == 'Z':
+                    variant_ids = tags['VA'][1].split(';')
+                    if var_id is None and variant_ids:
+                        var_id = variant_ids[0]
+                
+                # Extract length difference if available
+                if 'LD' in tags and tags['LD'][0] == 'i':
+                    try:
+                        length_change = int(tags['LD'][1])
+                    except ValueError:
+                        pass
+                
+                # Store segment information
                 segments[seg_id] = {
                     'sequence': sequence,
                     'length': len(sequence),
                     'tags': tags,
-                    'variants': var_info
+                    'variant_id': var_id,
+                    'variant_type': var_type,
+                    'length_change': length_change
                 }
                 
-                # If this is a modified segment, note the original segment
-                if 'OR' in tags and tags['OR'][0] == 'Z':
-                    original_seg = tags['OR'][1]
-                    segments[seg_id]['original_segment'] = original_seg
-                
-                logging.debug(f"Parsed segment: {seg_id} (length: {len(sequence)}, variants: {len(var_info)})")
-                
+                # Add to variants list if this is a variant segment
+                if var_id:
+                    # Check if variant already exists
+                    existing_var = next((v for v in variants if v['id'] == var_id), None)
+                    if existing_var:
+                        # Update existing variant entry
+                        existing_var['segments'].append(seg_id)
+                    else:
+                        # Create new variant entry
+                        variants.append({
+                            'id': var_id,
+                            'type': var_type,
+                            'segments': [seg_id],
+                            'length_change': length_change
+                        })
+            
             elif record_type == 'L':  # Link
                 if len(fields) < 6:
                     logging.warning(f"Line {line_num}: Invalid link record, missing fields")
@@ -192,14 +171,25 @@ def parse_gfa(gfa_file):
                 overlap = fields[5]
                 
                 links.append((from_id, from_dir, to_id, to_dir, overlap))
+    
+    # Second pass: collect path information
+    with open(gfa_file, 'r') as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
                 
-            elif record_type == 'P':  # Path
+            fields = line.split('\t')
+            record_type = fields[0]
+            
+            if record_type == 'P':  # Path
                 if len(fields) < 3:
                     logging.warning(f"Line {line_num}: Invalid path record, missing fields")
                     continue
                     
                 path_name = fields[1]
                 path_segments = []
+                
                 for seg in fields[2].split(','):
                     # Split into segment ID and orientation
                     if not seg or len(seg) < 2:
@@ -220,16 +210,100 @@ def parse_gfa(gfa_file):
                             tag_name, tag_type, tag_value = tag_parts
                             path_tags[tag_name] = (tag_type, tag_value)
                 
+                # Extract sample and haplotype information
+                sample_name = None
+                haplotype = None
+                variant_ids = []
+                
+                # First try to get info from tags
+                if 'SM' in path_tags and path_tags['SM'][0] == 'Z':
+                    sample_name = path_tags['SM'][1]
+                
+                if 'PH' in path_tags and path_tags['PH'][0] == 'Z':
+                    haplotype = path_tags['PH'][1]
+                
+                if 'VA' in path_tags and path_tags['VA'][0] == 'Z':
+                    variant_ids = path_tags['VA'][1].split(';')
+                
+                # If no sample info from tags, try to extract from path name
+                if not sample_name:
+                    # Try format like SAMPLE_Sample1_HAP1_1
+                    match = re.match(r'SAMPLE_(.+)_HAP(\d+)_\d+', path_name)
+                    if match:
+                        sample_name = match.group(1)
+                        hap_num = match.group(2)
+                        haplotype = f"haplotype_{hap_num}"
+                
+                # If still no sample info but path contains variant segments, 
+                # create a generic sample name
+                if not sample_name:
+                    has_variant_segments = any(segments.get(s[0], {}).get('variant_id') for s in path_segments)
+                    if has_variant_segments and path_name != 'REF':
+                        sample_name = f"Sample_{path_name}"
+                        haplotype = "haplotype_1"
+                
+                # Register sample and haplotype
+                if sample_name:
+                    samples[sample_name].append(path_name)
+                    if haplotype:
+                        haplotypes[sample_name][haplotype] = path_name
+                
+                # Extract variant IDs from path segments if not already defined
+                if not variant_ids:
+                    for seg_id, _ in path_segments:
+                        var_id = segments.get(seg_id, {}).get('variant_id')
+                        if var_id and var_id not in variant_ids:
+                            variant_ids.append(var_id)
+                
                 paths[path_name] = {
                     'segments': path_segments,
-                    'tags': path_tags
+                    'tags': path_tags,
+                    'sample': sample_name,
+                    'haplotype': haplotype,
+                    'variant_ids': variant_ids
                 }
-                logging.debug(f"Parsed path: {path_name} with {len(path_segments)} segments")
+    
+    # Find or create REF path
+    if 'REF' not in paths:
+        logging.info("REF path not found, looking for reference path")
+        # Try to find a path without variants
+        for name, path_data in paths.items():
+            if not path_data['variant_ids'] and not path_data['sample']:
+                paths['REF'] = path_data
+                logging.info(f"Using {name} as reference path")
+                break
+    
+    # If still no REF path, create one from non-variant segments
+    if 'REF' not in paths:
+        logging.info("Creating synthetic REF path from non-variant segments")
+        ref_segments = []
+        non_variant_segments = [seg_id for seg_id, data in segments.items() 
+                               if not data.get('variant_id')]
+        
+        # Sort segments by any available numbering
+        def extract_number(seg_id):
+            match = re.search(r'S(\d+)', seg_id)
+            return int(match.group(1)) if match else 0
+        
+        sorted_segments = sorted(non_variant_segments, key=extract_number)
+        
+        if sorted_segments:
+            ref_segments = [(seg_id, '+') for seg_id in sorted_segments]
+            paths['REF'] = {
+                'segments': ref_segments,
+                'tags': {},
+                'sample': None,
+                'haplotype': None,
+                'variant_ids': []
+            }
+        else:
+            logging.warning("Could not create REF path, no non-variant segments found")
     
     elapsed = time.time() - start_time
-    logging.info(f"Finished parsing GFA in {elapsed:.2f}s: {len(segments)} segments, {len(links)} links, {len(paths)} paths, {len(variants)} variants")
+    logging.info(f"Finished parsing GFA in {elapsed:.2f}s: {len(segments)} segments, {len(paths)} paths, {len(variants)} variants")
+    logging.info(f"Found {len(samples)} samples with paths")
     
-    return segments, links, paths, variants
+    return segments, links, paths, variants, samples, haplotypes
 
 def parse_gff3(gff_file):
     """Parse a GFF3 file into a list of features."""
@@ -313,7 +387,7 @@ def build_path_sequence(segments, path_segments):
     
     for seg_id, orientation in path_segments:
         if seg_id not in segments:
-            logging.error(f"Missing segment: {seg_id}")
+            logging.warning(f"Missing segment: {seg_id}")
             continue
             
         segment_seq = segments[seg_id]['sequence']
@@ -329,7 +403,8 @@ def build_path_sequence(segments, path_segments):
             'orientation': orientation,
             'start': current_offset,
             'end': current_offset + len(segment_seq) - 1,
-            'length': len(segment_seq)
+            'length': len(segment_seq),
+            'variant_id': segments[seg_id].get('variant_id')
         })
         
         sequence += segment_seq
@@ -337,258 +412,29 @@ def build_path_sequence(segments, path_segments):
     
     return sequence, segment_offsets
 
-def map_features_to_paths(features, ref_seq, alt_seq, variants):
-    """Map features from reference to alternate path and identify effects."""
-    feature_effects = []
-    
+def identify_first_cds_in_genes(features, feature_by_id, children_by_parent):
+    """Identify the first CDS feature in each gene to check for start codon changes."""
+    # For each mRNA, find all its CDS children and mark the first one
     for feature in features:
-        # Extract feature boundaries
-        start = feature['start'] - 1  # Convert to 0-based
-        end = feature['end'] - 1      # Convert to 0-based
-        feature_type = feature['type']
-        strand = feature['strand']
-        
-        # Skip if feature is outside sequence bounds
-        if start >= len(ref_seq) or end >= len(ref_seq):
-            logging.warning(f"Feature {feature['attributes'].get('ID', 'unknown')} is outside sequence bounds, skipping")
-            continue
-        
-        # Extract feature sequence from reference
-        ref_feature_seq = ref_seq[start:end+1]
-        
-        # Find overlapping variants
-        overlapping_variants = []
-        for variant in variants:
-            var_start = variant['pos'] - 1  # Convert to 0-based
-            var_end = var_start + len(variant['ref']) - 1
-            
-            # Check for overlap
-            if not (var_end < start or var_start > end):
-                overlapping_variants.append(variant)
-        
-        if not overlapping_variants:
-            # No variants overlap this feature
-            effect = {
-                'feature': feature,
-                'feature_type': feature_type,
-                'ref_feature_seq': ref_feature_seq,
-                'alt_feature_seq': ref_feature_seq,  # No change
-                'variants': [],
-                'effects': ['no_change'],
-                'details': {}
-            }
-        else:
-            # Identify impact of overlapping variants
-            effects = []
-            effect_details = {}
-            
-            # Find and apply all variants to the feature sequence
-            alt_feature_seq = apply_variants_to_sequence(ref_feature_seq, overlapping_variants, start)
-            
-            # Calculate basic effects
-            length_change = len(alt_feature_seq) - len(ref_feature_seq)
-            
-            if length_change != 0:
-                effects.append('length_change')
-                effect_details['length_change'] = length_change
-            
-            # Analyze more specific effects
-            for variant in overlapping_variants:
-                var_effects = analyze_variant_effect(variant, feature, start, end, ref_feature_seq, alt_feature_seq)
-                effects.extend(var_effects['effects'])
+        if feature['type'] == 'mRNA':
+            mrna_id = feature['attributes'].get('ID')
+            if not mrna_id:
+                continue
                 
-                # Merge effect details
-                for k, v in var_effects['details'].items():
-                    if k in effect_details:
-                        # If already exists, convert to list or append to list
-                        if not isinstance(effect_details[k], list):
-                            effect_details[k] = [effect_details[k]]
-                        if isinstance(v, list):
-                            effect_details[k].extend(v)
-                        else:
-                            effect_details[k].append(v)
-                    else:
-                        effect_details[k] = v
+            # Get all CDS features for this mRNA
+            cds_features = [f for f in children_by_parent.get(mrna_id, []) if f['type'] == 'CDS']
             
-            # Check for frame effects in coding features
-            if feature_type == 'CDS':
-                # Get the original phase
-                phase = int(feature['phase']) if feature['phase'] != '.' else 0
-                
-                # Check if length change is a multiple of 3 for in-frame changes
-                if length_change % 3 == 0:
-                    effects.append('in_frame_change')
-                else:
-                    effects.append('frame_shift')
-                    effect_details['frame_shift'] = length_change % 3
-                
-                # Check for premature stop codons
-                ref_cds = ref_feature_seq
-                alt_cds = alt_feature_seq
-                
-                # Adjust for phase
-                if phase > 0:
-                    ref_cds = ref_cds[phase:]
-                    # For alt_cds, we need to be careful about variant positions
-                    alt_cds = alt_cds[phase:]
-                
-                # Translate and check for stop codons
-                ref_aa = translate_sequence(ref_cds, strand)
-                alt_aa = translate_sequence(alt_cds, strand)
-                
-                # Check for premature stop codons in alt sequence
-                if '*' in alt_aa and (not '*' in ref_aa or alt_aa.index('*') < ref_aa.index('*')):
-                    effects.append('premature_stop_codon')
-                    effect_details['premature_stop_position'] = alt_aa.index('*') * 3
-                
-                # Check for amino acid changes
-                aa_changes = compare_amino_acid_sequences(ref_aa, alt_aa)
-                if aa_changes['changes'] > 0:
-                    effects.append('amino_acid_change')
-                    effect_details['amino_acid_changes'] = aa_changes
-                
-                # Check start codon disruption
-                if feature.get('is_first_cds', False) and alt_aa and (not alt_aa.startswith('M')):
-                    effects.append('start_codon_disruption')
-            
-            # Remove duplicates from effects list
-            effects = list(set(effects))
-            
-            effect = {
-                'feature': feature,
-                'feature_type': feature_type,
-                'ref_feature_seq': ref_feature_seq,
-                'alt_feature_seq': alt_feature_seq,
-                'variants': overlapping_variants,
-                'effects': effects,
-                'details': effect_details
-            }
-        
-        feature_effects.append(effect)
-    
-    return feature_effects
-
-def apply_variants_to_sequence(sequence, variants, offset):
-    """Apply variants to a sequence, accounting for position shifts."""
-    # Sort variants by position (ascending)
-    sorted_variants = sorted(variants, key=lambda v: v['pos'])
-    
-    # Apply variants in order of position
-    result = sequence
-    position_shift = 0
-    
-    for variant in sorted_variants:
-        var_start = variant['pos'] - 1 - offset  # Convert to 0-based and adjust for feature offset
-        var_end = var_start + len(variant['ref'])
-        
-        # Adjust for previous variants
-        var_start += position_shift
-        var_end += position_shift
-        
-        # Ensure variant is within bounds
-        if var_start < 0:
-            var_start = 0
-        if var_end > len(result):
-            var_end = len(result)
-        
-        # Apply the variant
-        if var_start <= len(result) and var_start >= 0:
-            if variant['type'] == 'SNP':
-                result = result[:var_start] + variant['alt'] + result[var_end:]
-            elif variant['type'] == 'DEL':
-                result = result[:var_start] + variant['alt'] + result[var_end:]
-            elif variant['type'] == 'INS':
-                result = result[:var_start] + variant['alt'] + result[var_start:]
-            elif variant['type'] == 'INV':
-                # For inversion, we reverse complement the reference sequence
-                result = result[:var_start] + variant['alt'] + result[var_end:]
+            # Sort by position, considering strand
+            if feature['strand'] == '+':
+                cds_features.sort(key=lambda x: x['start'])
             else:
-                # Default handling for other variant types
-                result = result[:var_start] + variant['alt'] + result[var_end:]
+                cds_features.sort(key=lambda x: x['start'], reverse=True)
             
-            # Update position shift
-            position_shift += len(variant['alt']) - (var_end - var_start)
+            # Mark the first CDS
+            if cds_features:
+                cds_features[0]['is_first_cds'] = True
     
-    return result
-
-def analyze_variant_effect(variant, feature, feature_start, feature_end, ref_feature_seq, alt_feature_seq):
-    """Analyze the specific effect of a variant on a feature."""
-    effects = []
-    details = {}
-    
-    variant_type = variant['type']
-    var_start = variant['pos'] - 1  # Convert to 0-based
-    var_end = var_start + len(variant['ref']) - 1
-    
-    # Basic effect based on variant type
-    if variant_type == 'SNP':
-        effects.append('substitution')
-        details['substitution'] = f"{variant['ref']} to {variant['alt']}"
-        
-        # Check if SNP changes amino acids
-        if feature['type'] == 'CDS':
-            codon_pos = (var_start - feature_start) % 3
-            details['codon_position'] = codon_pos
-    
-    elif variant_type == 'DEL':
-        effects.append('deletion')
-        details['deletion_length'] = len(variant['ref']) - len(variant['alt'])
-        
-        # Check if deletion removes a full codon
-        if feature['type'] == 'CDS':
-            is_codon_aligned = (var_start - feature_start) % 3 == 0 and len(variant['ref']) % 3 == 0
-            details['codon_aligned_deletion'] = is_codon_aligned
-    
-    elif variant_type == 'INS':
-        effects.append('insertion')
-        details['insertion_length'] = len(variant['alt']) - len(variant['ref'])
-        
-        # Check if insertion is codon-aligned
-        if feature['type'] == 'CDS':
-            is_codon_aligned = (var_start - feature_start) % 3 == 0 and len(variant['alt']) % 3 == 0
-            details['codon_aligned_insertion'] = is_codon_aligned
-    
-    elif variant_type == 'INV':
-        effects.append('inversion')
-        details['inversion_length'] = len(variant['ref'])
-    
-    elif variant_type == 'DUP':
-        effects.append('duplication')
-        details['duplication_length'] = len(variant['alt']) - len(variant['ref'])
-        
-        # Detect tandem duplications
-        if len(variant['alt']) > len(variant['ref']):
-            # Check if the extra sequence is a repeat of part of the reference
-            extra_seq = variant['alt'][len(variant['ref']):]
-            if extra_seq in ref_feature_seq:
-                effects.append('tandem_duplication')
-                details['tandem_repeat_count'] = len(variant['alt']) // len(variant['ref'])
-    
-    # Analyze location of variant relative to feature
-    if var_start <= feature_start and var_end >= feature_end:
-        effects.append('feature_span')  # Variant spans entire feature
-    elif var_start <= feature_start < var_end < feature_end:
-        effects.append('feature_start_disruption')  # Variant disrupts start
-    elif feature_start < var_start < feature_end and var_end >= feature_end:
-        effects.append('feature_end_disruption')  # Variant disrupts end
-    elif feature_start < var_start and var_end < feature_end:
-        effects.append('feature_internal')  # Variant is internal to feature
-    
-    # Special analysis for regulatory regions
-    if feature['type'] in ['promoter', 'terminator']:
-        effects.append(f"{feature['type']}_affected")
-    
-    # Special analysis for splicing regions (if near exon boundaries)
-    if feature['type'] == 'exon':
-        splice_region_size = 3  # nucleotides at exon boundaries considered splice regions
-        
-        if abs(var_start - feature_start) < splice_region_size or abs(var_end - feature_start) < splice_region_size:
-            effects.append('splice_acceptor_affected')
-        
-        if abs(var_start - feature_end) < splice_region_size or abs(var_end - feature_end) < splice_region_size:
-            effects.append('splice_donor_affected')
-    
-    return {'effects': effects, 'details': details}
+    return features
 
 def translate_sequence(nucleotide_seq, strand='+'):
     """Translate a nucleotide sequence to amino acids, considering strand."""
@@ -684,49 +530,354 @@ def compare_amino_acid_sequences(ref_aa, alt_aa):
         'details': changes
     }
 
-def generate_variant_effect_report(feature_effects, variants, outfile=None):
+def identify_variants_by_position(segment_offsets, ref_segments, variant_segments):
+    """Identify variants in an alternate sequence based on segment differences."""
+    variants_by_position = []
+    
+    # If no reference segments provided, return empty list
+    if not ref_segments:
+        return variants_by_position
+        
+    # Create a map of reference positions
+    ref_pos_map = {}
+    current_pos = 0
+    
+    for seg_info in ref_segments:
+        seg_id = seg_info['seg_id']
+        length = seg_info.get('length', 0)
+        ref_pos_map[seg_id] = (current_pos, current_pos + length - 1)
+        current_pos += length
+    
+    # Find alternate segments that differ from reference
+    for seg_info in segment_offsets:
+        seg_id = seg_info['seg_id']
+        start_pos = seg_info['start']
+        length = seg_info['length']
+        variant_id = seg_info.get('variant_id')
+        
+        # Only process segments with variant IDs
+        if variant_id and seg_id in variant_segments:
+            var_data = variant_segments[seg_id]
+            ref_id = var_data.get('original_segment', '')
+            
+            # Find reference position for this variant
+            if ref_id in ref_pos_map:
+                ref_start, ref_end = ref_pos_map[ref_id]
+                # Create a variant entry
+                variant = {
+                    'id': variant_id,
+                    'type': var_data.get('variant_type', 'UNKNOWN'),
+                    'pos': ref_start + 1,  # Convert to 1-based
+                    'end': ref_end + 1,    # Convert to 1-based
+                    'length_change': var_data.get('length_change', 0),
+                    'segments': [seg_id]
+                }
+                variants_by_position.append(variant)
+    
+    return variants_by_position
+
+def analyze_haplotype_differences(ref_seq, alt_seq, features, segment_offsets, variant_segments, segments):
+    """Analyze differences between reference and alternate haplotype sequences."""
+    feature_effects = []
+    
+    # Identify variants by comparing segment positions
+    ref_segments = []
+    for seg_info in segment_offsets:
+        seg_id = seg_info['seg_id']
+        if seg_id in segments and not segments[seg_id].get('variant_id'):
+            ref_segments.append({
+                'seg_id': seg_id,
+                'orientation': seg_info['orientation'],
+                'length': segments[seg_id]['length']
+            })
+    
+    variants = identify_variants_by_position(segment_offsets, ref_segments, variant_segments)
+    
+    for feature in features:
+        # Extract feature boundaries
+        start = feature['start'] - 1  # Convert to 0-based
+        end = feature['end'] - 1      # Convert to 0-based
+        feature_type = feature['type']
+        strand = feature['strand']
+        
+        # Skip if feature is outside sequence bounds
+        if start >= len(ref_seq) or end >= len(ref_seq):
+            logging.warning(f"Feature {feature['attributes'].get('ID', 'unknown')} is outside sequence bounds, skipping")
+            continue
+        
+        # Extract feature sequence from reference
+        ref_feature_seq = ref_seq[start:end+1]
+        
+        # Extract feature sequence from alternate
+        alt_feature_seq = ""
+        if end < len(alt_seq):
+            alt_feature_seq = alt_seq[start:end+1]
+        else:
+            # Handle case where alternate sequence is shorter than reference
+            if start < len(alt_seq):
+                alt_feature_seq = alt_seq[start:]
+            # Feature is beyond the end of the alternate sequence
+            else:
+                alt_feature_seq = ""
+        
+        # Find overlapping variants
+        overlapping_variants = []
+        for variant in variants:
+            var_start = variant.get('pos', 0) - 1  # Convert to 0-based
+            var_end = variant.get('end', var_start)
+            
+            # Check for overlap
+            if not (var_end < start or var_start > end):
+                overlapping_variants.append(variant)
+        
+        if ref_feature_seq == alt_feature_seq and not overlapping_variants:
+            # No changes to this feature
+            effect = {
+                'feature': feature,
+                'feature_type': feature_type,
+                'ref_feature_seq': ref_feature_seq,
+                'alt_feature_seq': alt_feature_seq,
+                'variants': [],
+                'effects': ['no_change'],
+                'details': {}
+            }
+        else:
+            # Analyze effects of changes
+            effects = []
+            effect_details = {}
+            
+            # Calculate basic effects
+            length_change = len(alt_feature_seq) - len(ref_feature_seq)
+            
+            if length_change != 0:
+                effects.append('length_change')
+                effect_details['length_change'] = length_change
+            
+            # Check for more specific effects
+            if feature_type == 'CDS':
+                # Check if length change is a multiple of 3 (in-frame)
+                if length_change % 3 == 0:
+                    effects.append('in_frame_change')
+                else:
+                    effects.append('frame_shift')
+                    effect_details['frame_shift'] = length_change % 3
+                
+                # Translate sequences to check for amino acid changes
+                ref_aa = translate_sequence(ref_feature_seq, strand)
+                alt_aa = translate_sequence(alt_feature_seq, strand)
+                
+                # Check for premature stop codons
+                if '*' in alt_aa and (not '*' in ref_aa or alt_aa.index('*') < ref_aa.index('*') if '*' in ref_aa else True):
+                    effects.append('premature_stop_codon')
+                    effect_details['premature_stop_position'] = alt_aa.index('*') * 3
+                
+                # Check for amino acid changes
+                aa_changes = compare_amino_acid_sequences(ref_aa, alt_aa)
+                if aa_changes['changes'] > 0:
+                    effects.append('amino_acid_change')
+                    effect_details['amino_acid_changes'] = aa_changes
+                
+                # Check start codon disruption
+                if feature.get('is_first_cds', False) and alt_aa and (not alt_aa.startswith('M')):
+                    effects.append('start_codon_disruption')
+            
+            # Check for regulatory region effects
+            if feature_type in ['promoter', 'terminator']:
+                effects.append(f"{feature_type}_affected")
+            
+            # Check for splicing region effects
+            if feature_type == 'exon':
+                effects.append('splicing_affected')
+            
+            # Remove duplicates
+            effects = list(set(effects))
+            
+            effect = {
+                'feature': feature,
+                'feature_type': feature_type,
+                'ref_feature_seq': ref_feature_seq,
+                'alt_feature_seq': alt_feature_seq,
+                'variants': overlapping_variants,
+                'effects': effects,
+                'details': effect_details
+            }
+        
+        feature_effects.append(effect)
+    
+    return feature_effects
+
+def analyze_sample_haplotypes(feature_effects_by_haplotype, features):
+    """Analyze differences between sample haplotypes to identify homo/heterozygous effects."""
+    if len(feature_effects_by_haplotype) < 2:
+        # Cannot determine zygosity with less than 2 haplotypes
+        return {'homozygous': [], 'heterozygous': [], 'incomplete': True}
+    
+    # Get haplotype names
+    haplotype_names = list(feature_effects_by_haplotype.keys())
+    
+    # Map feature IDs to effects for each haplotype
+    feature_map = {}
+    for hap_name, effects in feature_effects_by_haplotype.items():
+        for effect in effects:
+            feature_id = effect['feature']['attributes'].get('ID', 'unknown')
+            if feature_id not in feature_map:
+                feature_map[feature_id] = {}
+            
+            feature_map[feature_id][hap_name] = effect
+    
+    # Identify homozygous vs heterozygous effects
+    homozygous = []
+    heterozygous = []
+    
+    for feature_id, hap_effects in feature_map.items():
+        # Skip if feature is not affected in all haplotypes
+        if len(hap_effects) < len(haplotype_names):
+            continue
+        
+        # Check if effects are identical across haplotypes
+        effect_signatures = {}
+        for hap_name, effect in hap_effects.items():
+            # Create a signature of the effect for comparison
+            sig = (
+                tuple(sorted(effect['effects'])),
+                effect['alt_feature_seq']
+            )
+            effect_signatures[hap_name] = sig
+        
+        # Check if all signatures are the same
+        is_homozygous = len(set(effect_signatures.values())) == 1
+        
+        if is_homozygous:
+            # Use the effect from the first haplotype
+            first_hap = haplotype_names[0]
+            effect = hap_effects[first_hap]
+            effect['zygosity'] = 'homozygous'
+            homozygous.append(effect)
+        else:
+            # Create a heterozygous effect entry
+            # We'll use the effect from the first haplotype but note the differences
+            first_hap = haplotype_names[0]
+            effect = hap_effects[first_hap].copy()
+            effect['zygosity'] = 'heterozygous'
+            effect['haplotype_effects'] = hap_effects
+            
+            # Analyze differences
+            diff_effects = set()
+            for hap_name, hap_effect in hap_effects.items():
+                for e in hap_effect['effects']:
+                    diff_effects.add(e)
+            
+            effect['combined_effects'] = list(diff_effects)
+            heterozygous.append(effect)
+    
+    return {
+        'homozygous': homozygous,
+        'heterozygous': heterozygous,
+        'incomplete': False
+    }
+
+def generate_variant_effect_report(feature_effects, variants, outfile=None, sample_name=None, sample_effects=None):
     """Generate a comprehensive report of variant effects on features."""
     # Open output file if specified
     out = open(outfile, 'w') if outfile else sys.stdout
     
     # Write report header
-    out.write("# Variant Effect Report\n")
+    if sample_name:
+        out.write(f"# Variant Effect Report for Sample: {sample_name}\n")
+    else:
+        out.write("# Variant Effect Report\n")
     out.write("#" + "=" * 79 + "\n\n")
     
     # Write variant summary
     out.write("## Variant Summary\n")
     out.write("-" * 80 + "\n")
     
-    for variant in variants:
-        out.write(f"Variant: {variant['id']} ({variant['type']})\n")
-        out.write(f"Position: {variant['pos']}-{variant['end']}\n")
-        out.write(f"Reference: {variant['ref']}\n")
-        out.write(f"Alternate: {variant['alt']}\n")
-        out.write(f"Length Change: {variant['length_change']} bp\n")
-        out.write("\n")
+    # Filter variants if sample-specific
+    if sample_name and sample_effects:
+        # Extract variant IDs from sample effects
+        variant_ids = set()
+        for effect_type in ['homozygous', 'heterozygous']:
+            for effect in sample_effects.get(effect_type, []):
+                for var in effect.get('variants', []):
+                    variant_ids.add(var['id'])
+        
+        # Filter variants
+        filtered_variants = [v for v in variants if v['id'] in variant_ids]
+        if filtered_variants:
+            for variant in filtered_variants:
+                zygosity = ""
+                # Determine zygosity for this variant
+                for effect_type in ['homozygous', 'heterozygous']:
+                    for effect in sample_effects.get(effect_type, []):
+                        if any(v['id'] == variant['id'] for v in effect.get('variants', [])):
+                            zygosity = effect_type.upper()
+                            break
+                    if zygosity:
+                        break
+                
+                out.write(f"Variant: {variant['id']} ({variant.get('type', 'UNKNOWN')}){' - ' + zygosity if zygosity else ''}\n")
+                if 'pos' in variant and variant['pos'] > 0:
+                    out.write(f"Position: {variant.get('pos', 'unknown')}-{variant.get('end', 'unknown')}\n")
+                out.write(f"Length Change: {variant.get('length_change', 'unknown')} bp\n")
+                out.write(f"Affected Segments: {', '.join(variant.get('segments', []))}\n")
+                out.write("\n")
+        else:
+            out.write("No variants for this sample.\n\n")
+    else:
+        # Write all variants
+        for variant in variants:
+            out.write(f"Variant: {variant['id']} ({variant.get('type', 'UNKNOWN')})\n")
+            if 'pos' in variant and variant['pos'] > 0:
+                out.write(f"Position: {variant.get('pos', 'unknown')}-{variant.get('end', 'unknown')}\n")
+            out.write(f"Length Change: {variant.get('length_change', 'unknown')} bp\n")
+            out.write(f"Affected Segments: {', '.join(variant.get('segments', []))}\n")
+            out.write("\n")
     
     # Group features by type
     features_by_type = defaultdict(list)
-    for effect in feature_effects:
+    
+    # Use sample_effects if provided, otherwise use feature_effects
+    if sample_name and sample_effects and not sample_effects.get('incomplete'):
+        effects_to_process = []
+        effects_to_process.extend(sample_effects.get('homozygous', []))
+        effects_to_process.extend(sample_effects.get('heterozygous', []))
+    else:
+        effects_to_process = feature_effects
+    
+    for effect in effects_to_process:
         features_by_type[effect['feature_type']].append(effect)
     
     # Write feature effect summary
-    out.write("\n## Feature Effect Summary\n")
+    if sample_name:
+        out.write(f"\n## Feature Effect Summary for Sample: {sample_name}\n")
+    else:
+        out.write("\n## Feature Effect Summary\n")
     out.write("-" * 80 + "\n")
     
     # Calculate statistics
     effect_counts = Counter()
     affected_feature_counts = Counter()
+    zygosity_counts = Counter()
     
-    for effect in feature_effects:
-        if effect['variants']:  # If feature is affected by variants
+    for effect in effects_to_process:
+        if effect['effects'] and effect['effects'] != ['no_change']:  # If feature is affected
             affected_feature_counts[effect['feature_type']] += 1
             for e in effect['effects']:
                 effect_counts[e] += 1
+            
+            # Count zygosity if available
+            if 'zygosity' in effect:
+                zygosity_counts[effect['zygosity']] += 1
     
     # Write statistics
-    out.write(f"Total Features Analyzed: {len(feature_effects)}\n")
+    out.write(f"Total Features Analyzed: {len(effects_to_process)}\n")
     out.write(f"Features Affected by Variants: {sum(affected_feature_counts.values())}\n\n")
+    
+    # Add zygosity statistics for sample-specific reports
+    if sample_name and zygosity_counts:
+        out.write("Zygosity Summary:\n")
+        out.write(f"  Homozygous Effects: {zygosity_counts.get('homozygous', 0)}\n")
+        out.write(f"  Heterozygous Effects: {zygosity_counts.get('heterozygous', 0)}\n\n")
     
     out.write("Affected Features by Type:\n")
     for feature_type, count in sorted(affected_feature_counts.items()):
@@ -739,11 +890,14 @@ def generate_variant_effect_report(feature_effects, variants, outfile=None):
         out.write(f"  {effect_type}: {count}\n")
     
     # Write detailed feature effects
-    out.write("\n\n## Detailed Feature Effects\n")
+    if sample_name:
+        out.write(f"\n\n## Detailed Feature Effects for Sample: {sample_name}\n")
+    else:
+        out.write("\n\n## Detailed Feature Effects\n")
     
     # Process each feature type
     for feature_type, effects in sorted(features_by_type.items()):
-        affected_effects = [e for e in effects if e['variants']]
+        affected_effects = [e for e in effects if e['effects'] and e['effects'] != ['no_change']]
         
         if not affected_effects:
             continue  # Skip feature types not affected by variants
@@ -759,14 +913,26 @@ def generate_variant_effect_report(feature_effects, variants, outfile=None):
             out.write(f"\nFeature: {feature_name} ({feature_id})\n")
             out.write(f"Location: {feature['start']}-{feature['end']} ({feature['strand']})\n")
             
+            # Add zygosity information if available
+            if 'zygosity' in effect:
+                out.write(f"Zygosity: {effect['zygosity'].upper()}\n")
+            
             # List variants affecting this feature
-            out.write("Affected by variants:\n")
-            for variant in effect['variants']:
-                out.write(f"  - {variant['id']} ({variant['type']})\n")
+            if effect.get('variants'):
+                out.write("Affected by variants:\n")
+                for variant in effect['variants']:
+                    out.write(f"  - {variant['id']} ({variant.get('type', 'UNKNOWN')})\n")
             
             # List effects
             out.write("Effects:\n")
-            for effect_type in sorted(effect['effects']):
+            
+            # Use combined_effects for heterozygous variants if available
+            if 'zygosity' in effect and effect['zygosity'] == 'heterozygous' and 'combined_effects' in effect:
+                effect_list = effect['combined_effects']
+            else:
+                effect_list = effect['effects']
+                
+            for effect_type in sorted(effect_list):
                 if effect_type == 'no_change':
                     out.write("  - No effect on this feature\n")
                     continue
@@ -783,6 +949,16 @@ def generate_variant_effect_report(feature_effects, variants, outfile=None):
                         detail_str = f": {detail}"
                 
                 out.write(f"  - {effect_type}{detail_str}\n")
+            
+            # For heterozygous effects, show haplotype-specific differences
+            if 'zygosity' in effect and effect['zygosity'] == 'heterozygous' and 'haplotype_effects' in effect:
+                out.write("\nHaplotype-specific Effects:\n")
+                for hap_name, hap_effect in effect['haplotype_effects'].items():
+                    out.write(f"  {hap_name}:\n")
+                    for e in sorted(hap_effect['effects']):
+                        if e == 'no_change':
+                            continue
+                        out.write(f"    - {e}\n")
             
             # Add sequence details for CDS features
             if feature_type == 'CDS' and 'amino_acid_change' in effect['effects']:
@@ -814,139 +990,343 @@ def generate_variant_effect_report(feature_effects, variants, outfile=None):
                     stop_pos = effect['details'].get('premature_stop_position', 'unknown')
                     out.write(f"Premature stop codon introduced at position: {stop_pos}\n")
     
-    # Write summary of the most severe effects
-    out.write("\n\n## Most Severe Effects Summary\n")
+    # Close output file if opened
+    if outfile:
+        out.close()
+        logging.info(f"Report written to {outfile}")
+
+def generate_variant_effect_report(feature_effects, variants, outfile=None, sample_name=None, sample_effects=None):
+    """Generate a comprehensive report of variant effects on features."""
+    # Open output file if specified
+    out = open(outfile, 'w') if outfile else sys.stdout
+    
+    # Write report header
+    if sample_name:
+        out.write(f"# Variant Effect Report for Sample: {sample_name}\n")
+    else:
+        out.write("# Variant Effect Report\n")
+    out.write("#" + "=" * 79 + "\n\n")
+    
+    # Write variant summary
+    out.write("## Variant Summary\n")
     out.write("-" * 80 + "\n")
     
-    # Define severity order
-    severity_order = [
-        'premature_stop_codon',
-        'start_codon_disruption',
-        'frame_shift',
-        'splice_acceptor_affected',
-        'splice_donor_affected',
-        'feature_span',
-        'feature_start_disruption',
-        'feature_end_disruption',
-        'amino_acid_change',
-        'in_frame_change',
-        'substitution',
-        'deletion',
-        'insertion',
-        'inversion',
-        'duplication',
-        'promoter_affected',
-        'terminator_affected',
-        'feature_internal',
-        'length_change',
-        'no_change'
-    ]
-    
-    # Group effects by variant
-    effects_by_variant = defaultdict(list)
-    
-    for effect in feature_effects:
-        for variant in effect['variants']:
-            effects_by_variant[variant['id']].append(effect)
-    
-    # Write severe effects by variant
-    for var_id, effects in sorted(effects_by_variant.items()):
-        # Find most severe effect for each feature
-        severe_effects = []
+    # Filter variants if sample-specific
+    if sample_name and sample_effects:
+        # Extract variant IDs from sample effects
+        variant_ids = set()
+        for effect_type in ['homozygous', 'heterozygous']:
+            for effect in sample_effects.get(effect_type, []):
+                for var in effect.get('variants', []):
+                    variant_ids.add(var['id'])
         
-        for effect in effects:
-            # Find the most severe effect according to severity_order
-            most_severe = None
-            lowest_severity = float('inf')
-            
+        # Filter variants
+        filtered_variants = [v for v in variants if v['id'] in variant_ids]
+        if filtered_variants:
+            for variant in filtered_variants:
+                zygosity = ""
+                # Determine zygosity for this variant
+                for effect_type in ['homozygous', 'heterozygous']:
+                    for effect in sample_effects.get(effect_type, []):
+                        if any(v['id'] == variant['id'] for v in effect.get('variants', [])):
+                            zygosity = effect_type.upper()
+                            break
+                    if zygosity:
+                        break
+                
+                out.write(f"Variant: {variant['id']} ({variant.get('type', 'UNKNOWN')}){' - ' + zygosity if zygosity else ''}\n")
+                if 'pos' in variant and variant['pos'] > 0:
+                    out.write(f"Position: {variant.get('pos', 'unknown')}-{variant.get('end', 'unknown')}\n")
+                out.write(f"Length Change: {variant.get('length_change', 'unknown')} bp\n")
+                out.write(f"Affected Segments: {', '.join(variant.get('segments', []))}\n")
+                out.write("\n")
+        else:
+            out.write("No variants for this sample.\n\n")
+    else:
+        # Write all variants
+        for variant in variants:
+            out.write(f"Variant: {variant['id']} ({variant.get('type', 'UNKNOWN')})\n")
+            if 'pos' in variant and variant['pos'] > 0:
+                out.write(f"Position: {variant.get('pos', 'unknown')}-{variant.get('end', 'unknown')}\n")
+            out.write(f"Length Change: {variant.get('length_change', 'unknown')} bp\n")
+            out.write(f"Affected Segments: {', '.join(variant.get('segments', []))}\n")
+            out.write("\n")
+    
+    # Group features by type
+    features_by_type = defaultdict(list)
+    
+    # Use sample_effects if provided, otherwise use feature_effects
+    if sample_name and sample_effects and not sample_effects.get('incomplete'):
+        effects_to_process = []
+        effects_to_process.extend(sample_effects.get('homozygous', []))
+        effects_to_process.extend(sample_effects.get('heterozygous', []))
+    else:
+        effects_to_process = feature_effects
+    
+    for effect in effects_to_process:
+        features_by_type[effect['feature_type']].append(effect)
+    
+    # Write feature effect summary
+    if sample_name:
+        out.write(f"\n## Feature Effect Summary for Sample: {sample_name}\n")
+    else:
+        out.write("\n## Feature Effect Summary\n")
+    out.write("-" * 80 + "\n")
+    
+    # Calculate statistics
+    effect_counts = Counter()
+    affected_feature_counts = Counter()
+    zygosity_counts = Counter()
+    
+    for effect in effects_to_process:
+        if effect['effects'] and effect['effects'] != ['no_change']:  # If feature is affected
+            affected_feature_counts[effect['feature_type']] += 1
             for e in effect['effects']:
-                try:
-                    severity = severity_order.index(e)
-                    if severity < lowest_severity:
-                        lowest_severity = severity
-                        most_severe = e
-                except ValueError:
-                    # Effect not in severity order, assign low priority
-                    pass
+                effect_counts[e] += 1
             
-            if most_severe:
-                feature_id = effect['feature']['attributes'].get('ID', 'unknown')
-                feature_type = effect['feature_type']
-                severe_effects.append((most_severe, feature_id, feature_type))
+            # Count zygosity if available
+            if 'zygosity' in effect:
+                zygosity_counts[effect['zygosity']] += 1
+    
+    # Write statistics
+    out.write(f"Total Features Analyzed: {len(effects_to_process)}\n")
+    out.write(f"Features Affected by Variants: {sum(affected_feature_counts.values())}\n\n")
+    
+    # Add zygosity statistics for sample-specific reports
+    if sample_name and zygosity_counts:
+        out.write("Zygosity Summary:\n")
+        out.write(f"  Homozygous Effects: {zygosity_counts.get('homozygous', 0)}\n")
+        out.write(f"  Heterozygous Effects: {zygosity_counts.get('heterozygous', 0)}\n\n")
+    
+    out.write("Affected Features by Type:\n")
+    for feature_type, count in sorted(affected_feature_counts.items()):
+        total = len(features_by_type[feature_type])
+        percentage = (count / total * 100) if total > 0 else 0
+        out.write(f"  {feature_type}: {count}/{total} ({percentage:.1f}%)\n")
+    
+    out.write("\nVariant Effects by Type:\n")
+    for effect_type, count in sorted(effect_counts.items(), key=lambda x: x[1], reverse=True):
+        out.write(f"  {effect_type}: {count}\n")
+    
+    # Write detailed feature effects
+    if sample_name:
+        out.write(f"\n\n## Detailed Feature Effects for Sample: {sample_name}\n")
+    else:
+        out.write("\n\n## Detailed Feature Effects\n")
+    
+    # Process each feature type
+    for feature_type, effects in sorted(features_by_type.items()):
+        affected_effects = [e for e in effects if e['effects'] and e['effects'] != ['no_change']]
         
-        # Write summary for this variant
-        variant = next(v for v in variants if v['id'] == var_id)
-        out.write(f"Variant {var_id} ({variant['type']}) - Position: {variant['pos']}-{variant['end']}\n")
+        if not affected_effects:
+            continue  # Skip feature types not affected by variants
         
-        # Count effect types
-        effect_type_counts = Counter([e[0] for e in severe_effects])
-        out.write("Effect types:\n")
-        for effect_type, count in sorted(effect_type_counts.items(), key=lambda x: severity_order.index(x[0]) if x[0] in severity_order else 999):
-            out.write(f"  - {effect_type}: {count} features\n")
+        out.write(f"\n### {feature_type.upper()} Features\n")
+        out.write("-" * 80 + "\n")
         
-        # List affected features by effect type
-        if severe_effects:
-            out.write("Affected features by severity:\n")
-            for effect_type in severity_order:
-                features_with_effect = [(f_id, f_type) for e, f_id, f_type in severe_effects if e == effect_type]
-                if features_with_effect:
-                    out.write(f"  {effect_type}:\n")
-                    for f_id, f_type in features_with_effect:
-                        out.write(f"    - {f_id} ({f_type})\n")
-        
-        out.write("\n")
+        for effect in affected_effects:
+            feature = effect['feature']
+            feature_id = feature['attributes'].get('ID', 'unknown')
+            feature_name = feature['attributes'].get('Name', feature_id)
+            
+            out.write(f"\nFeature: {feature_name} ({feature_id})\n")
+            out.write(f"Location: {feature['start']}-{feature['end']} ({feature['strand']})\n")
+            
+            # Add zygosity information if available
+            if 'zygosity' in effect:
+                out.write(f"Zygosity: {effect['zygosity'].upper()}\n")
+            
+            # List variants affecting this feature
+            if effect.get('variants'):
+                out.write("Affected by variants:\n")
+                for variant in effect['variants']:
+                    out.write(f"  - {variant['id']} ({variant.get('type', 'UNKNOWN')})\n")
+            
+            # List effects
+            out.write("Effects:\n")
+            
+            # Use combined_effects for heterozygous variants if available
+            if 'zygosity' in effect and effect['zygosity'] == 'heterozygous' and 'combined_effects' in effect:
+                effect_list = effect['combined_effects']
+            else:
+                effect_list = effect['effects']
+                
+            for effect_type in sorted(effect_list):
+                if effect_type == 'no_change':
+                    out.write("  - No effect on this feature\n")
+                    continue
+                
+                # Format effect with details if available
+                detail_str = ""
+                if effect_type in effect['details']:
+                    detail = effect['details'][effect_type]
+                    if isinstance(detail, dict):
+                        detail_str = ": " + ", ".join(f"{k}={v}" for k, v in detail.items())
+                    elif isinstance(detail, list):
+                        detail_str = ": " + ", ".join(str(d) for d in detail)
+                    else:
+                        detail_str = f": {detail}"
+                
+                out.write(f"  - {effect_type}{detail_str}\n")
+            
+            # For heterozygous effects, show haplotype-specific differences
+            if 'zygosity' in effect and effect['zygosity'] == 'heterozygous' and 'haplotype_effects' in effect:
+                out.write("\nHaplotype-specific Effects:\n")
+                for hap_name, hap_effect in effect['haplotype_effects'].items():
+                    out.write(f"  {hap_name}:\n")
+                    for e in sorted(hap_effect['effects']):
+                        if e == 'no_change':
+                            continue
+                        out.write(f"    - {e}\n")
+            
+            # Add sequence details for CDS features
+            if feature_type == 'CDS' and 'amino_acid_change' in effect['effects']:
+                aa_changes = effect['details'].get('amino_acid_changes', {})
+                if aa_changes:
+                    out.write("\nAmino Acid Changes:\n")
+                    for detail in aa_changes.get('details', []):
+                        out.write(f"  - {detail}\n")
+            
+            # Write sequence changes
+            if len(effect['ref_feature_seq']) <= 50 and len(effect['alt_feature_seq']) <= 50:
+                out.write("\nSequence Changes:\n")
+                out.write(f"  Reference: {effect['ref_feature_seq']}\n")
+                out.write(f"  Alternate: {effect['alt_feature_seq']}\n")
+            else:
+                out.write("\nSequence Changes (truncated):\n")
+                out.write(f"  Reference: {effect['ref_feature_seq'][:25]}...{effect['ref_feature_seq'][-25:]}\n")
+                out.write(f"  Alternate: {effect['alt_feature_seq'][:25]}...{effect['alt_feature_seq'][-25:]}\n")
+            
+            # Add frame information for CDS features
+            if feature_type == 'CDS':
+                if 'frame_shift' in effect['effects']:
+                    frame_shift = effect['details'].get('frame_shift', 'unknown')
+                    out.write(f"\nFrame Shift: {frame_shift} bases\n")
+                elif 'in_frame_change' in effect['effects']:
+                    out.write("\nIn-frame change (multiple of 3 bases)\n")
+                
+                if 'premature_stop_codon' in effect['effects']:
+                    stop_pos = effect['details'].get('premature_stop_position', 'unknown')
+                    out.write(f"Premature stop codon introduced at position: {stop_pos}\n")
     
     # Close output file if opened
     if outfile:
         out.close()
+        logging.info(f"Report written to {outfile}")
 
-def identify_first_cds_in_genes(features, feature_by_id, children_by_parent):
-    """Identify the first CDS feature in each gene to check for start codon changes."""
-    # For each mRNA, find all its CDS children and mark the first one
-    for feature in features:
-        if feature['type'] == 'mRNA':
-            mrna_id = feature['attributes'].get('ID')
-            if not mrna_id:
-                continue
+def generate_sample_reports(segments, paths, variants, features, outfile_prefix=None):
+    """Generate sample-specific variant effect reports."""
+    # Identify samples with paths
+    samples = defaultdict(list)
+    haplotypes = defaultdict(dict)
+    
+    for path_name, path_data in paths.items():
+        sample_name = path_data.get('sample')
+        if sample_name:
+            samples[sample_name].append(path_name)
+            
+            # Track haplotype paths
+            haplotype = path_data.get('haplotype')
+            if haplotype and haplotype.startswith('haplotype_'):
+                haplotypes[sample_name][haplotype] = path_name
+    
+    if not samples:
+        logging.warning("No sample-specific paths found in GFA")
+        return {}
+    
+    logging.info(f"Found {len(samples)} samples with paths")
+    sample_reports = {}
+    
+    # Get reference path
+    ref_path_name = 'REF'
+    if ref_path_name not in paths:
+        logging.error("REF path not found in GFA")
+        return {}
+    
+    ref_path_segments = paths[ref_path_name]['segments']
+    ref_seq, _ = build_path_sequence(segments, ref_path_segments)
+    
+    # Process each sample
+    for sample_name, path_list in samples.items():
+        logging.info(f"Generating report for sample: {sample_name}")
+        
+        # Determine if we have phased haplotypes for this sample
+        sample_haplotypes = haplotypes.get(sample_name, {})
+        has_phased_haplotypes = len(sample_haplotypes) >= 2
+        
+        if has_phased_haplotypes:
+            logging.info(f"Found {len(sample_haplotypes)} phased haplotypes for sample {sample_name}")
+            
+            # Process each haplotype
+            feature_effects_by_haplotype = {}
+            variant_segments = {}
+            
+            # First collect variant segments
+            for seg_id, seg_data in segments.items():
+                if seg_data.get('variant_id'):
+                    variant_segments[seg_id] = seg_data
+            
+            for hap_name, path_name in sample_haplotypes.items():
+                logging.info(f"Processing haplotype: {hap_name} (path: {path_name})")
                 
-            # Get all CDS features for this mRNA
-            cds_features = [f for f in children_by_parent.get(mrna_id, []) if f['type'] == 'CDS']
+                # Build path sequence
+                path_segments = paths[path_name]['segments']
+                hap_seq, segment_offsets = build_path_sequence(segments, path_segments)
+                
+                # Analyze haplotype differences
+                hap_effects = analyze_haplotype_differences(
+                    ref_seq, 
+                    hap_seq, 
+                    features, 
+                    segment_offsets, 
+                    variant_segments,
+                    segments
+                )
+                
+                feature_effects_by_haplotype[hap_name] = hap_effects
             
-            # Sort by position, considering strand
-            if feature['strand'] == '+':
-                cds_features.sort(key=lambda x: x['start'])
-            else:
-                cds_features.sort(key=lambda x: x['start'], reverse=True)
+            # Analyze homozygous vs heterozygous effects
+            zygosity_effects = analyze_sample_haplotypes(feature_effects_by_haplotype, features)
             
-            # Mark the first CDS
-            if cds_features:
-                cds_features[0]['is_first_cds'] = True
+            # Generate report for this sample
+            outfile = f"{outfile_prefix}_{sample_name}.txt" if outfile_prefix else None
+            generate_variant_effect_report([], variants, outfile, sample_name, zygosity_effects)
+            
+            sample_reports[sample_name] = outfile
+        else:
+            # Process single haplotype
+            logging.info(f"Only one haplotype found for sample {sample_name}, processing as single path")
+            
+            # Get the first path for this sample
+            path_name = path_list[0]
+            path_segments = paths[path_name]['segments']
+            
+            # Collect variant segments
+            variant_segments = {}
+            for seg_id, seg_data in segments.items():
+                if seg_data.get('variant_id'):
+                    variant_segments[seg_id] = seg_data
+            
+            # Build path sequence
+            alt_seq, segment_offsets = build_path_sequence(segments, path_segments)
+            
+            # Analyze differences
+            feature_effects = analyze_haplotype_differences(
+                ref_seq, 
+                alt_seq, 
+                features, 
+                segment_offsets, 
+                variant_segments,
+                segments
+            )
+            
+            # Generate report
+            outfile = f"{outfile_prefix}_{sample_name}.txt" if outfile_prefix else None
+            generate_variant_effect_report(feature_effects, variants, outfile, sample_name)
+            
+            sample_reports[sample_name] = outfile
     
-    return features
-
-def export_fasta_sequences(ref_seq, alt_seq, prefix):
-    """Export reference and alternate sequences to FASTA files."""
-    ref_file = f"{prefix}_ref.fa"
-    alt_file = f"{prefix}_alt.fa"
-    
-    # Export reference sequence
-    with open(ref_file, 'w') as f:
-        f.write(">REF Reference sequence\n")
-        # Write in wrapped format (80 chars per line)
-        for i in range(0, len(ref_seq), 80):
-            f.write(f"{ref_seq[i:i+80]}\n")
-    
-    # Export alternate sequence
-    with open(alt_file, 'w') as f:
-        f.write(">ALT Alternate sequence with variants\n")
-        # Write in wrapped format (80 chars per line)
-        for i in range(0, len(alt_seq), 80):
-            f.write(f"{alt_seq[i:i+80]}\n")
-    
-    logging.info(f"Reference sequence exported to {ref_file}")
-    logging.info(f"Alternate sequence exported to {alt_file}")
-    
-    return ref_file, alt_file
+    return sample_reports
 
 def main():
     """Main function to run the variant effect report generation."""
@@ -955,20 +1335,11 @@ def main():
     parser.add_argument('gff_file', help='Input GFF3 file with feature annotations')
     parser.add_argument('--output', help='Output report file (default: stdout)')
     
-    # Path options
-    parser.add_argument('--ref-path', default='REF', help='Name of the reference path in GFA (default: %(default)s)')
-    parser.add_argument('--alt-path', default='ALT', help='Name of the alternate path in GFA (default: %(default)s)')
-    
-    # Report options
-    parser.add_argument('--include-sequences', action='store_true', help='Include full sequences in the report')
-    parser.add_argument('--simple-report', action='store_true', help='Generate a simplified summary report')
-    parser.add_argument('--export-fasta', help='Export reference and alternate sequences to FASTA files with this prefix')
-    
-    # Output format options
-    parser.add_argument('--format', choices=['text', 'json', 'jsonld', 'rdf'], default='text',
-                       help='Output format (default: %(default)s)')
-    parser.add_argument('--rdf-format', choices=['turtle', 'xml', 'n3', 'nt', 'json-ld'], default='turtle',
-                       help='RDF serialization format when using --format=rdf (default: %(default)s)')
+    # Sample options
+    parser.add_argument('--sample-reports', action='store_true', 
+                       help='Generate individual reports for each sample')
+    parser.add_argument('--output-prefix', help='Prefix for sample report files')
+    parser.add_argument('--samples', help='Comma-separated list of sample names to process (default: all)')
     
     # Debug and logging options
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
@@ -982,61 +1353,105 @@ def main():
     
     try:
         # Parse input files
-        segments, links, paths, variants = parse_gfa(args.gfa_file)
+        segments, links, paths, variants, samples, haplotypes = parse_gfa(args.gfa_file)
         features, feature_by_id, children_by_parent = parse_gff3(args.gff_file)
         
         # Mark first CDS in each gene for start codon analysis
         features = identify_first_cds_in_genes(features, feature_by_id, children_by_parent)
         
-        # Get reference and alternate paths
-        if args.ref_path not in paths:
-            available_paths = ", ".join(paths.keys())
-            if available_paths:
-                logging.error(f"Reference path '{args.ref_path}' not found. Available paths: {available_paths}")
+        # Filter samples if requested
+        if args.samples and args.sample_reports:
+            requested_samples = [s.strip() for s in args.samples.split(',')]
+            filtered_samples = {name: paths for name, paths in samples.items() if name in requested_samples}
+            if not filtered_samples:
+                logging.warning(f"None of the requested samples found in GFA")
+            samples = filtered_samples
+        
+        # Generate sample-specific reports if requested
+        if args.sample_reports:
+            if samples:
+                sample_reports = generate_sample_reports(
+                    segments, 
+                    paths, 
+                    variants, 
+                    features, 
+                    outfile_prefix=args.output_prefix
+                )
+                logging.info(f"Generated {len(sample_reports)} sample reports")
             else:
-                logging.error(f"No paths found in GFA file")
-            return 1
+                logging.warning("No samples found in GFA, cannot generate sample reports")
+        
+        # Generate main report if requested
+        if args.output or not args.sample_reports:
+            # Get reference path
+            ref_path_name = 'REF'
+            if ref_path_name not in paths:
+                logging.error("REF path not found in GFA")
+                return 1
             
-        if args.alt_path not in paths:
-            available_paths = ", ".join(paths.keys())
-            if available_paths:
-                logging.error(f"Alternate path '{args.alt_path}' not found. Available paths: {available_paths}")
-            else:
-                logging.error(f"No paths found in GFA file")
-            return 1
+            # Collect variant segments
+            variant_segments = {}
+            for seg_id, seg_data in segments.items():
+                if seg_data.get('variant_id'):
+                    variant_segments[seg_id] = seg_data
+            
+            # Build reference sequence
+            ref_path_segments = paths[ref_path_name]['segments']
+            ref_seq, ref_offsets = build_path_sequence(segments, ref_path_segments)
+            
+            # Process each sample or first available sample if none specified
+            processed_sample = False
+            
+            for sample_name, sample_haplotypes in haplotypes.items():
+                if not args.samples or sample_name in args.samples.split(','):
+                    logging.info(f"Processing sample: {sample_name}")
+                    
+                    # Process first haplotype
+                    hap_name, path_name = next(iter(sample_haplotypes.items()))
+                    
+                    # Build path sequence
+                    path_segments = paths[path_name]['segments']
+                    alt_seq, segment_offsets = build_path_sequence(segments, path_segments)
+                    
+                    # Analyze differences
+                    feature_effects = analyze_haplotype_differences(
+                        ref_seq, 
+                        alt_seq, 
+                        features, 
+                        segment_offsets, 
+                        variant_segments,
+                        segments
+                    )
+                    
+                    # Generate report
+                    outfile = f"{args.output}_{sample_name}.txt" if args.output else None
+                    generate_variant_effect_report(feature_effects, variants, outfile, sample_name)
+                    
+                    processed_sample = True
+                    break
+            
+            # If no samples processed, use the first available path
+            if not processed_sample:
+                for path_name, path_data in paths.items():
+                    if path_name != 'REF' and 'segments' in path_data:
+                        # Build path sequence
+                        path_segments = path_data['segments']
+                        alt_seq, segment_offsets = build_path_sequence(segments, path_segments)
+                        
+                        # Analyze differences
+                        feature_effects = analyze_haplotype_differences(
+                            ref_seq, 
+                            alt_seq, 
+                            features, 
+                            segment_offsets, 
+                            variant_segments,
+                            segments
+                        )
+                        
+                        # Generate report
+                        generate_variant_effect_report(feature_effects, variants, args.output)
+                        break
         
-        ref_path = paths[args.ref_path]['segments']
-        alt_path = paths[args.alt_path]['segments']
-        
-        # Build reference and alternate sequences
-        ref_seq, ref_offsets = build_path_sequence(segments, ref_path)
-        alt_seq, alt_offsets = build_path_sequence(segments, alt_path)
-        
-        logging.info(f"Reference sequence length: {len(ref_seq)} bp")
-        logging.info(f"Alternate sequence length: {len(alt_seq)} bp")
-        logging.info(f"Length difference: {len(alt_seq) - len(ref_seq)} bp")
-        
-        # Map features to paths and identify effects
-        feature_effects = map_features_to_paths(features, ref_seq, alt_seq, variants)
-        
-        # Export FASTA sequences if requested
-        if args.export_fasta:
-            export_fasta_sequences(ref_seq, alt_seq, args.export_fasta)
-        
-        # Generate output in the requested format
-        if args.format == 'text':
-            generate_variant_effect_report(feature_effects, variants, args.output)
-        elif args.format == 'json':
-            generate_json_output(feature_effects, variants, args.output)
-        elif args.format == 'jsonld':
-            generate_jsonld_output(feature_effects, variants, args.output)
-        elif args.format == 'rdf':
-            generate_rdf_output(feature_effects, variants, args.output, args.rdf_format)
-        else:
-            logging.error(f"Unknown output format: {args.format}")
-            return 1
-        
-        logging.info(f"Variant effect report generated successfully in {args.format} format")
         return 0
         
     except Exception as e:
@@ -1046,374 +1461,5 @@ def main():
             logging.error(traceback.format_exc())
         return 1
 
-def generate_json_output(feature_effects, variants, outfile=None):
-    """Generate a JSON format report of variant effects on features."""
-    import json
-    
-    # Build the output structure
-    output = {
-        "meta": {
-            "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "tool": "variant-effect-report.py",
-            "version": "1.0"
-        },
-        "variants": [],
-        "feature_effects": []
-    }
-    
-    # Add variants
-    for variant in variants:
-        output["variants"].append({
-            "id": variant['id'],
-            "type": variant['type'],
-            "position": variant['pos'],
-            "end": variant['end'],
-            "reference": variant['ref'],
-            "alternate": variant['alt'],
-            "length_change": variant['length_change']
-        })
-    
-    # Add effects
-    for effect in feature_effects:
-        if not effect['variants']:
-            continue
-            
-        feature = effect['feature']
-        feature_id = feature['attributes'].get('ID', 'unknown')
-        feature_name = feature['attributes'].get('Name', feature_id)
-        
-        effect_entry = {
-            "feature": {
-                "id": feature_id,
-                "name": feature_name,
-                "type": effect['feature_type'],
-                "location": {
-                    "start": feature['start'],
-                    "end": feature['end'],
-                    "strand": feature['strand']
-                },
-                "attributes": feature['attributes']
-            },
-            "variants": [v['id'] for v in effect['variants']],
-            "effects": effect['effects'],
-            "details": effect['details'],
-            "sequences": {
-                "reference": effect['ref_feature_seq'],
-                "alternate": effect['alt_feature_seq']
-            }
-        }
-        
-        # Add amino acid changes for CDS features
-        if effect['feature_type'] == 'CDS' and 'amino_acid_changes' in effect['details']:
-            effect_entry["amino_acid_changes"] = effect['details']['amino_acid_changes']
-        
-        output["feature_effects"].append(effect_entry)
-    
-    # Write to file or stdout
-    if outfile:
-        with open(outfile, 'w') as f:
-            json.dump(output, f, indent=2)
-        logging.info(f"JSON output written to {outfile}")
-    else:
-        print(json.dumps(output, indent=2))
-    
-    return output
-
-def generate_jsonld_output(feature_effects, variants, outfile=None):
-    """Generate a JSON-LD format report of variant effects on features."""
-    import json
-    
-    # Build the JSON-LD context
-    context = {
-        "@context": {
-            "@vocab": "http://example.org/vep/",
-            "xsd": "http://www.w3.org/2001/XMLSchema#",
-            "so": "http://purl.obolibrary.org/obo/SO_",
-            "faldo": "http://biohackathon.org/resource/faldo#",
-            "variant": {"@id": "hasVariant", "@type": "@id"},
-            "feature": {"@id": "affectsFeature", "@type": "@id"},
-            "effect": {"@id": "hasEffect", "@type": "@id"},
-            "position": {"@id": "faldo:position", "@type": "xsd:integer"},
-            "start": {"@id": "faldo:begin", "@type": "xsd:integer"},
-            "end": {"@id": "faldo:end", "@type": "xsd:integer"},
-            "reference": "hasReferenceSequence",
-            "alternate": "hasAlternateSequence",
-            "strand": "onStrand",
-            "variants": {"@id": "hasVariant", "@type": "@id", "@container": "@set"},
-            "effects": {"@id": "hasEffect", "@type": "@id", "@container": "@set"},
-            "feature_effects": {"@id": "hasFeatureEffect", "@container": "@set"}
-        }
-    }
-    
-    # Map variant types to Sequence Ontology terms
-    so_term_map = {
-        "SNP": "so:0001483",         # SNV
-        "DEL": "so:0000159",         # deletion
-        "INS": "so:0000667",         # insertion
-        "INV": "so:1000036",         # inversion
-        "DUP": "so:1000035"          # duplication
-    }
-    
-    # Map effect types to Sequence Ontology terms
-    effect_term_map = {
-        "no_change": "so:0001878",               # feature_variant
-        "substitution": "so:1000002",            # substitution
-        "deletion": "so:0000159",                # deletion
-        "insertion": "so:0000667",               # insertion
-        "inversion": "so:1000036",               # inversion
-        "duplication": "so:1000035",             # duplication
-        "frame_shift": "so:0001589",             # frameshift_variant
-        "in_frame_change": "so:0001650",         # inframe_variant
-        "premature_stop_codon": "so:0001587",    # stop_gained
-        "start_codon_disruption": "so:0002012",  # start_lost
-        "amino_acid_change": "so:0001992",       # nonsynonymous_variant
-        "splice_acceptor_affected": "so:0001574", # splice_acceptor_variant
-        "splice_donor_affected": "so:0001575",    # splice_donor_variant
-        "feature_span": "so:0001537",            # structural_variant
-        "feature_start_disruption": "so:0001580", # coding_sequence_variant
-        "feature_end_disruption": "so:0001580",  # coding_sequence_variant
-        "feature_internal": "so:0001580",        # coding_sequence_variant
-        "promoter_affected": "so:0001631",       # upstream_gene_variant
-        "terminator_affected": "so:0001632",     # downstream_gene_variant
-        "length_change": "so:0001059"            # sequence_alteration
-    }
-    
-    # Build the output structure
-    output = {
-        "@context": context["@context"],
-        "@id": "urn:x-local:variant-effect-report",
-        "@type": "VariantEffectReport",
-        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "variants": [],
-        "feature_effects": []
-    }
-    
-    # Add variants
-    for variant in variants:
-        var_type = variant['type']
-        var_entry = {
-            "@id": f"variant:{variant['id']}",
-            "@type": so_term_map.get(var_type, "SequenceVariant"),
-            "id": variant['id'],
-            "type": var_type,
-            "position": variant['pos'],
-            "end": variant['end'],
-            "reference": variant['ref'],
-            "alternate": variant['alt'],
-            "length_change": variant['length_change']
-        }
-        output["variants"].append(var_entry)
-    
-    # Add effects
-    for effect_index, effect in enumerate(feature_effects):
-        if not effect['variants']:
-            continue
-            
-        feature = effect['feature']
-        feature_id = feature['attributes'].get('ID', 'unknown')
-        feature_name = feature['attributes'].get('Name', feature_id)
-        
-        # Create feature entry
-        feature_entry = {
-            "@id": f"feature:{feature_id}",
-            "@type": "GenomicFeature",
-            "id": feature_id,
-            "name": feature_name,
-            "featureType": effect['feature_type'],
-            "location": {
-                "@type": "Region",
-                "start": feature['start'],
-                "end": feature['end'],
-                "strand": feature['strand']
-            }
-        }
-        
-        # Create effect entry
-        effect_entry = {
-            "@id": f"effect:{effect_index}",
-            "@type": "VariantEffect",
-            "feature": feature_entry["@id"],
-            "variants": [f"variant:{v['id']}" for v in effect['variants']],
-            "effects": [effect_term_map.get(e, e) for e in effect['effects']],
-            "sequences": {
-                "reference": effect['ref_feature_seq'],
-                "alternate": effect['alt_feature_seq']
-            }
-        }
-        
-        # Add details as separate properties
-        for k, v in effect['details'].items():
-            if k == 'amino_acid_changes' and isinstance(v, dict):
-                if v.get('details'):
-                    effect_entry["aminoAcidChanges"] = v['details']
-            elif isinstance(v, (int, str, bool, float)):
-                effect_entry[k] = v
-        
-        output["feature_effects"].append(effect_entry)
-    
-    # Write to file or stdout
-    if outfile:
-        with open(outfile, 'w') as f:
-            json.dump(output, f, indent=2)
-        logging.info(f"JSON-LD output written to {outfile}")
-    else:
-        print(json.dumps(output, indent=2))
-    
-    return output
-
-def generate_rdf_output(feature_effects, variants, outfile=None, format='turtle'):
-    """
-    Generate RDF output of variant effects on features.
-    
-    Args:
-        feature_effects: List of feature effect dictionaries
-        variants: List of variant dictionaries
-        outfile: Output file path (default: stdout)
-        format: RDF serialization format ('turtle', 'xml', 'n3', 'nt', 'json-ld')
-    """
-    try:
-        from rdflib import Graph, Namespace, URIRef, Literal, BNode
-        from rdflib.namespace import RDF, RDFS, XSD
-    except ImportError:
-        logging.error("RDF output requires rdflib package. Please install with: pip install rdflib")
-        return None
-    
-    # Create the RDF graph
-    g = Graph()
-    
-    # Define namespaces
-    VEP = Namespace("http://example.org/vep/")
-    SO = Namespace("http://purl.obolibrary.org/obo/SO_")
-    FALDO = Namespace("http://biohackathon.org/resource/faldo#")
-    
-    # Bind namespaces to prefixes
-    g.bind("vep", VEP)
-    g.bind("so", SO)
-    g.bind("faldo", FALDO)
-    g.bind("rdf", RDF)
-    g.bind("rdfs", RDFS)
-    
-    # Map variant types to Sequence Ontology terms
-    so_term_map = {
-        "SNP": SO["0001483"],         # SNV
-        "DEL": SO["0000159"],         # deletion
-        "INS": SO["0000667"],         # insertion
-        "INV": SO["1000036"],         # inversion
-        "DUP": SO["1000035"]          # duplication
-    }
-    
-    # Map effect types to Sequence Ontology terms
-    effect_term_map = {
-        "no_change": SO["0001878"],               # feature_variant
-        "substitution": SO["1000002"],            # substitution
-        "deletion": SO["0000159"],                # deletion
-        "insertion": SO["0000667"],               # insertion
-        "inversion": SO["1000036"],               # inversion
-        "duplication": SO["1000035"],             # duplication
-        "frame_shift": SO["0001589"],             # frameshift_variant
-        "in_frame_change": SO["0001650"],         # inframe_variant
-        "premature_stop_codon": SO["0001587"],    # stop_gained
-        "start_codon_disruption": SO["0002012"],  # start_lost
-        "amino_acid_change": SO["0001992"],       # nonsynonymous_variant
-        "splice_acceptor_affected": SO["0001574"], # splice_acceptor_variant
-        "splice_donor_affected": SO["0001575"],    # splice_donor_variant
-        "feature_span": SO["0001537"],            # structural_variant
-        "feature_start_disruption": SO["0001580"], # coding_sequence_variant
-        "feature_end_disruption": SO["0001580"],  # coding_sequence_variant
-        "feature_internal": SO["0001580"],        # coding_sequence_variant
-        "promoter_affected": SO["0001631"],       # upstream_gene_variant
-        "terminator_affected": SO["0001632"],     # downstream_gene_variant
-        "length_change": SO["0001059"]            # sequence_alteration
-    }
-    
-    # Create report node
-    report_uri = URIRef("urn:x-local:variant-effect-report")
-    g.add((report_uri, RDF.type, VEP.VariantEffectReport))
-    g.add((report_uri, VEP.generatedAt, Literal(time.strftime("%Y-%m-%dT%H:%M:%S"), datatype=XSD.dateTime)))
-    
-    # Add variants
-    for variant in variants:
-        var_uri = URIRef(f"urn:variant:{variant['id']}")
-        var_type = variant['type']
-        
-        # Add type
-        g.add((var_uri, RDF.type, so_term_map.get(var_type, SO["0001060"])))  # Default to sequence_variant
-        
-        # Add variant properties
-        g.add((var_uri, VEP.id, Literal(variant['id'])))
-        g.add((var_uri, VEP.type, Literal(var_type)))
-        g.add((var_uri, VEP.position, Literal(variant['pos'], datatype=XSD.integer)))
-        g.add((var_uri, VEP.end, Literal(variant['end'], datatype=XSD.integer)))
-        g.add((var_uri, VEP.reference, Literal(variant['ref'])))
-        g.add((var_uri, VEP.alternate, Literal(variant['alt'])))
-        g.add((var_uri, VEP.lengthChange, Literal(variant['length_change'], datatype=XSD.integer)))
-        
-        # Link to report
-        g.add((report_uri, VEP.hasVariant, var_uri))
-    
-    # Add effects
-    for effect_index, effect in enumerate(feature_effects):
-        if not effect['variants']:
-            continue
-            
-        feature = effect['feature']
-        feature_id = feature['attributes'].get('ID', 'unknown')
-        feature_name = feature['attributes'].get('Name', feature_id)
-        
-        # Create feature node
-        feature_uri = URIRef(f"urn:feature:{feature_id}")
-        g.add((feature_uri, RDF.type, VEP.GenomicFeature))
-        g.add((feature_uri, VEP.id, Literal(feature_id)))
-        g.add((feature_uri, VEP.name, Literal(feature_name)))
-        g.add((feature_uri, VEP.featureType, Literal(effect['feature_type'])))
-        
-        # Create location node
-        location_node = BNode()
-        g.add((location_node, RDF.type, FALDO.Region))
-        g.add((location_node, FALDO.begin, Literal(feature['start'], datatype=XSD.integer)))
-        g.add((location_node, FALDO.end, Literal(feature['end'], datatype=XSD.integer)))
-        g.add((location_node, FALDO.strand, Literal(feature['strand'])))
-        g.add((feature_uri, FALDO.location, location_node))
-        
-        # Create effect node
-        effect_uri = URIRef(f"urn:effect:{effect_index}")
-        g.add((effect_uri, RDF.type, VEP.VariantEffect))
-        g.add((effect_uri, VEP.affectsFeature, feature_uri))
-        
-        # Link to variants
-        for variant in effect['variants']:
-            var_uri = URIRef(f"urn:variant:{variant['id']}")
-            g.add((effect_uri, VEP.hasVariant, var_uri))
-        
-        # Add effects
-        for e in effect['effects']:
-            effect_term = effect_term_map.get(e, VEP[e])
-            g.add((effect_uri, VEP.hasEffect, effect_term))
-        
-        # Add sequences
-        g.add((effect_uri, VEP.referenceSequence, Literal(effect['ref_feature_seq'])))
-        g.add((effect_uri, VEP.alternateSequence, Literal(effect['alt_feature_seq'])))
-        
-        # Add details
-        for k, v in effect['details'].items():
-            if k == 'amino_acid_changes' and isinstance(v, dict):
-                if v.get('details'):
-                    for change in v['details']:
-                        g.add((effect_uri, VEP.aminoAcidChange, Literal(change)))
-            elif isinstance(v, (int, str, bool)):
-                g.add((effect_uri, VEP[k], Literal(v)))
-        
-        # Link to report
-        g.add((report_uri, VEP.hasFeatureEffect, effect_uri))
-    
-    # Serialize the graph
-    if outfile:
-        g.serialize(destination=outfile, format=format)
-        logging.info(f"RDF output ({format}) written to {outfile}")
-    else:
-        print(g.serialize(format=format).decode('utf-8'))
-    
-    return g
-    
 if __name__ == "__main__":
     sys.exit(main())
