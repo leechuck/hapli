@@ -235,8 +235,18 @@ class SimpleGFAGenerator:
         complement = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
         return ''.join(complement.get(base, 'N') for base in reversed(seq))
     
-    def export_vcf(self, variants: List[Dict], filename: str, contig_id="1") -> None:
-        """Export variants to a VCF file"""
+    def export_vcf(self, variants: List[Dict], filename: str, contig_id="1", 
+                 samples=None, phased=False) -> None:
+        """
+        Export variants to a VCF file
+        
+        Args:
+            variants: List of variant dictionaries
+            filename: Output VCF filename
+            contig_id: Contig ID to use in VCF
+            samples: List of sample names for multi-sample VCF (None = no samples)
+            phased: Whether to generate phased genotypes (|) or unphased (/)
+        """
         with open(filename, 'w') as f:
             # Write VCF header
             f.write("##fileformat=VCFv4.2\n")
@@ -255,8 +265,22 @@ class SimpleGFAGenerator:
             f.write("##ALT=<ID=DUP,Description=\"Duplication\">\n")
             f.write("##ALT=<ID=INV,Description=\"Inversion\">\n")
             
+            # Add FORMAT fields if we have samples
+            if samples:
+                f.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
+                f.write("##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths for the ref and alt alleles\">\n")
+                f.write("##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Read depth\">\n")
+            
             # Write column headers
-            f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+            header = "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"
+            if samples:
+                header += "\tFORMAT"
+                for sample in samples:
+                    header += f"\t{sample}"
+            f.write(header + "\n")
+            
+            # Store the phase separator
+            phase_sep = "|" if phased else "/"
             
             # Write variants
             for i, var in enumerate(variants):
@@ -287,8 +311,66 @@ class SimpleGFAGenerator:
                 # Build INFO field
                 info = f"SVTYPE={var_type};SVLEN={svlen};END={end};HGVS={hgvs}"
                 
-                # Write variant line
-                f.write(f"{contig_id}\t{pos}\t{var_id}\t{ref}\t{alt}\t100\tPASS\t{info}\n")
+                # Start the variant line
+                line = f"{contig_id}\t{pos}\t{var_id}\t{ref}\t{alt}\t100\tPASS\t{info}"
+                
+                # Add genotype information if samples are specified
+                if samples:
+                    line += "\tGT:AD:DP"
+                    
+                    # Generate genotype for each sample
+                    for _ in samples:
+                        # Randomly assign genotype (0/0, 0/1, or 1/1)
+                        # With 20% homozygous ref, 50% heterozygous, 30% homozygous alt
+                        r = random.random()
+                        if r < 0.2:  # Homozygous reference
+                            gt = f"0{phase_sep}0"
+                            ad = f"30,0"
+                            dp = "30"
+                        elif r < 0.7:  # Heterozygous
+                            gt = f"0{phase_sep}1"
+                            ad = f"15,15"
+                            dp = "30"
+                        else:  # Homozygous alternate
+                            gt = f"1{phase_sep}1"
+                            ad = f"0,30"
+                            dp = "30"
+                        
+                        line += f"\t{gt}:{ad}:{dp}"
+                
+                f.write(line + "\n")
+
+
+def load_reference_sequence(ref_file: str) -> Tuple[str, str]:
+    """
+    Load reference sequence from FASTA file (compressed or uncompressed)
+    
+    Args:
+        ref_file: Path to reference FASTA file
+        
+    Returns:
+        Tuple of (sequence_id, sequence)
+    """
+    # Check if file is gzipped
+    is_gzipped = ref_file.endswith('.gz')
+    
+    # Open appropriate file handle
+    if is_gzipped:
+        handle = gzip.open(ref_file, 'rt')  # 'rt' for text mode
+    else:
+        handle = open(ref_file, 'r')
+    
+    try:
+        # Read first sequence in the file
+        for record in SeqIO.parse(handle, 'fasta'):
+            sequence_id = record.id
+            sequence = str(record.seq)
+            return sequence_id, sequence
+            
+    finally:
+        handle.close()
+    
+    raise ValueError(f"Could not load reference sequence from {ref_file}")
 
 
 def parse_var_types(var_types_str: str) -> List[str]:
@@ -332,38 +414,6 @@ def parse_size_range(size_range_str: str) -> Dict[str, Tuple[int, int]]:
     return size_ranges
 
 
-def load_reference_sequence(ref_file: str) -> Tuple[str, str]:
-    """
-    Load reference sequence from FASTA file (compressed or uncompressed)
-    
-    Args:
-        ref_file: Path to reference FASTA file
-        
-    Returns:
-        Tuple of (sequence_id, sequence)
-    """
-    # Check if file is gzipped
-    is_gzipped = ref_file.endswith('.gz')
-    
-    # Open appropriate file handle
-    if is_gzipped:
-        handle = gzip.open(ref_file, 'rt')  # 'rt' for text mode
-    else:
-        handle = open(ref_file, 'r')
-    
-    try:
-        # Read first sequence in the file
-        for record in SeqIO.parse(handle, 'fasta'):
-            sequence_id = record.id
-            sequence = str(record.seq)
-            return sequence_id, sequence
-            
-    finally:
-        handle.close()
-    
-    raise ValueError(f"Could not load reference sequence from {ref_file}")
-
-
 def main():
     """Main function to generate test data files"""
     parser = argparse.ArgumentParser(description='Generate test data for HGVS to GFA mapper')
@@ -405,6 +455,15 @@ def main():
     var_group.add_argument('--seed', '-s', type=int, default=42,
                         help='Random seed (default: 42)')
     
+    # Sample options
+    sample_group = parser.add_argument_group('Sample Options')
+    sample_group.add_argument('--samples', type=str, default='',
+                        help='Comma-separated list of sample names for multi-sample VCF (default: no samples)')
+    sample_group.add_argument('--num-samples', type=int, default=0,
+                        help='Number of samples to generate with auto-named IDs (e.g., Sample1, Sample2)')
+    sample_group.add_argument('--phased', action='store_true',
+                        help='Generate phased genotypes (|) instead of unphased (/) in the VCF')
+    
     args = parser.parse_args()
     
     # Create output directory if it doesn't exist
@@ -443,6 +502,24 @@ def main():
     else:
         print(f"Generating random reference sequence of length {args.seq_length}")
     
+    # Prepare sample list for VCF
+    samples = []
+    if args.samples:
+        samples = [s.strip() for s in args.samples.split(',') if s.strip()]
+    
+    if args.num_samples > 0:
+        # Add auto-generated sample names
+        existing_count = len(samples)
+        for i in range(1, args.num_samples + 1):
+            samples.append(f"Sample{existing_count + i}")
+    
+    if samples:
+        print(f"VCF will include {len(samples)} samples: {', '.join(samples)}")
+        if args.phased:
+            print("Genotypes will be phased")
+        else:
+            print("Genotypes will be unphased")
+    
     # Create generator with reference or random sequence
     generator = SimpleGFAGenerator(
         ref_seq=ref_seq,
@@ -478,7 +555,7 @@ def main():
         )
         
         print(f"Exporting VCF to {vcf_path}")
-        generator.export_vcf(variants, vcf_path, args.contig_id)
+        generator.export_vcf(variants, vcf_path, args.contig_id, samples, args.phased)
         
         # Report details of variants
         print("\nGenerated variants:")
