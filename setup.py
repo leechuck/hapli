@@ -20,6 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "variant-effect-report=variant_effect_report.cli:main",
+            "generate-test-data=variant_effect_report.tools.generate_test_data:main",
         ],
     },
     classifiers=[
