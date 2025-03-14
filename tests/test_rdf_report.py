@@ -129,15 +129,16 @@ class RDFReportTests(unittest.TestCase):
         
     @patch('hapli.reporting.rdf_report.rdflib')
     @patch('hapli.reporting.rdf_report.build_path_sequence')
-    def test_consolidated_rdf_report(self, mock_build_path, mock_rdflib):
+    @patch('hapli.reporting.rdf_report.analyze_haplotype_differences')
+    def test_consolidated_rdf_report(self, mock_analyze_differences, mock_build_path, mock_rdflib):
         """Test creating a consolidated RDF report."""
         # Setup mock graph
         mock_graph = MagicMock()
         mock_rdflib.Graph.return_value = mock_graph
         mock_graph.__len__.return_value = 20  # Simulate some triples in the graph
         
-        # Setup mock build_path_sequence to return a sequence and length
-        mock_build_path.return_value = ('ACGT', 4)
+        # Setup mock build_path_sequence to return a sequence and segment_offsets dictionary
+        mock_build_path.return_value = ('ACGT', {'seg1': (0, 4, '+')})
             
         # Test data
         variants = [{'id': 'var1', 'type': 'SNP', 'pos': 100, 'ref': 'A', 'alt': 'G'}]
@@ -165,6 +166,18 @@ class RDFReportTests(unittest.TestCase):
                 if parent_id not in children_by_parent:
                     children_by_parent[parent_id] = []
                 children_by_parent[parent_id].append(f['id'])
+        
+        # Setup mock analyze_haplotype_differences to return a list of effects
+        mock_analyze_differences.return_value = [
+            {
+                'feature': features[0],
+                'effects': ['missense_variant'],
+                'variants': [variants[0]],
+                'ref_feature_seq': 'ACGT',
+                'alt_feature_seq': 'ACTT',
+                'details': {'missense_variant': {'ref_aa': 'T', 'alt_aa': 'I'}}
+            }
+        ]
         
         # Create consolidated report
         graph = rdf_report.create_consolidated_rdf_report(
