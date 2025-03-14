@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from rdflib import Graph, Literal, BNode, Namespace, RDF, URIRef, XSD
+from rdflib.namespace import RDFS
 
 from variant_effect_report.rdf.namespaces import GenomicNamespaces
 from variant_effect_report.core.models import Feature, Variant, FeatureEffect
