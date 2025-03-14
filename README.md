@@ -170,3 +170,44 @@ python variant-effect-report.py out.gfa testdata/test.gff3 --sample-reports  --c
 This will generate a similar report, but identifies the feature
 changes by alignments, not just by the sequence of nodes in the path.
 
+# hapli - Haplotype and Genotype Functional Annotation Tool
+
+hapli provides functional annotations to haplotypes and genotypes using GFA files as a basis for annotation.
+
+## Installation
+
+```bash
+pip install .
+```
+
+## Usage
+
+```bash
+# Basic usage
+hapli input.gfa annotations.gff3 -o output.txt
+
+# Generate RDF output
+hapli input.gfa annotations.gff3 --format rdf --output output.ttl
+
+# Generate sample-specific reports
+hapli input.gfa annotations.gff3 --sample-reports --output-prefix sample_reports
+
+# Use sequence alignment for more accurate variant effect prediction
+hapli input.gfa annotations.gff3 --use-alignment -o output.txt
+
+# Generate a consolidated RDF report for all samples
+hapli input.gfa annotations.gff3 --format rdf --consolidated -o consolidated.ttl
+```
+
+## Features
+
+- Parse GFA files with variant information
+- Parse GFF3 files with genomic feature annotations
+- Analyze variant effects on genomic features
+- Generate detailed reports in text or RDF format
+- Support for phased haplotypes and compound heterozygous variants
+- Sequence alignment-based variant effect prediction
+
+## License
+
+MIT
