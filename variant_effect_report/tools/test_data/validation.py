@@ -5,7 +5,7 @@ Biological consistency validation for test data.
 import logging
 from typing import Dict, List, Set, Tuple, Optional
 from Bio.Seq import Seq
-from Bio.SeqUtils import GC
+from Bio.SeqUtils import gc_fraction
 
 
 class BiologicalValidator:
@@ -104,12 +104,12 @@ class BiologicalValidator:
                         )
             
             # Check GC content of insertions (should be similar to reference)
-            ref_gc = GC(reference_sequence)
+            ref_gc = gc_fraction(reference_sequence) * 100  # Convert to percentage
             for i, var in enumerate(variants):
                 if var['type'] == 'INS':
                     ins_seq = var['alt'][1:]  # Remove first base which is reference
                     if len(ins_seq) >= 10:  # Only check longer insertions
-                        ins_gc = GC(ins_seq)
+                        ins_gc = gc_fraction(ins_seq) * 100  # Convert to percentage
                         if abs(ins_gc - ref_gc) > 20:  # More than 20% difference
                             errors.append(
                                 f"Unusual GC content in insertion at position {var['pos']}: "

@@ -9,7 +9,8 @@ from typing import Dict, List, Tuple, Optional
 from Bio.Seq import Seq
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
-from Bio.SeqUtils import GC, molecular_weight
+from Bio.SeqUtils import molecular_weight
+from Bio.SeqUtils import gc_fraction
 
 
 class SequenceHandler:
@@ -133,7 +134,7 @@ class SequenceHandler:
         """
         return {
             'length': len(sequence),
-            'gc_content': GC(sequence),
+            'gc_content': gc_fraction(sequence) * 100,  # Convert to percentage
             'molecular_weight': molecular_weight(sequence),
             'base_counts': {
                 'A': sequence.upper().count('A'),
