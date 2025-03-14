@@ -1,6 +1,6 @@
-* Annotate structural variants with pangenome graphs
+# Annotate structural variants with pangenome graphs
 
-** Generate test data
+## Generate test data
 
 `misc/generate-test-data.py` is a simple generator that creates a
 reference in FASTA and GFA format, and a VCF file with random
@@ -48,7 +48,7 @@ This will create a GFF3 file which looks like this:
 ...
 ```
 
-** Map VCF variants to GFA
+## Map VCF variants to GFA
 
 We use GFA to represent variants and haplotypes. Next, we need to map
 the variants in the VCF file to paths in a GFA file. There are two
@@ -90,7 +90,7 @@ Output will look like this:
 P       ALT     S1_VAR18_VAR5+,S2_VAR6_VAR14_VAR11+,S3_VAR9_VAR2_VAR1+,S4_VAR17_VAR20_VAR8+,S5_VAR12+,S6+,S7_VAR16_VAR15_VAR13+,S8_VAR10+,S9_VAR3_VAR7_VAR4+,S10_VAR19+,S11+    *       VN:Z:variant_path     SR:Z:REF
 ```
 
-** Variant effect annotation
+## Variant effect annotation
 
 Next, we can get "variant" effects by overlaying the path information
 generated from the variants with a GFF3 file that contains genomic
