@@ -292,7 +292,12 @@ def generate_variant_effect_report(feature_effects, variants, outfile=None, samp
             out.write("This section lists features affected by different variants on different haplotypes.\n\n")
             
             # Group by feature type
-            effects_by_type = defaultdict(list)
+            effects_by_type = {}
+            for effect in feature_compound_het_effects:
+                feature_type = effect.get('feature_type', 'unknown')
+                if feature_type not in effects_by_type:
+                    effects_by_type[feature_type] = []
+                effects_by_type[feature_type].append(effect)
             for effect in feature_compound_het_effects:
                 effects_by_type[effect.get('feature_type', 'unknown')].append(effect)
             
