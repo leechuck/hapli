@@ -83,8 +83,12 @@ def cli():
         sys.argv[0] = 'generate_test_data'
         return generate_test_data.main()
     elif args.command == 'vcf-to-gfa':
+        # Pass the arguments directly to vcf_to_gfa.main
+        sys.argv[0] = 'vcf_to_gfa'
         return vcf_to_gfa.main()
     elif args.command == 'gfa-to-gff3':
+        # Pass the arguments directly to gfa_to_gff3.main
+        sys.argv[0] = 'gfa_to_gff3'
         return gfa_to_gff3.main()
     elif args.command == 'analyze':
         return main()
