@@ -22,13 +22,23 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio import pairwise2
 
+# Required imports
+try:
+    import cyvcf2
+    CYVCF2_AVAILABLE = True
+except ImportError:
+    CYVCF2_AVAILABLE = False
+    logging.warning("cyvcf2 not available. Please install with: pip install cyvcf2")
+
 # Optional import for HGVS support
 try:
     import hgvs.parser
     import hgvs.validator
+    import hgvs.exceptions
     HGVS_AVAILABLE = True
 except ImportError:
     HGVS_AVAILABLE = False
+    logging.warning("hgvs package not available. HGVS validation will be skipped.")
 
 def setup_logging(debug=False, log_file=None, verbose=False):
     """Configure logging based on debug flag and optional log file."""
@@ -597,8 +607,8 @@ def apply_variants_to_segments(segments, variants, segment_offsets, path_segment
     
     # Function to process a single segment
     def process_segment(seg_id, var_list):
-        # Sort by relative position (descending)
-        var_list.sort(key=lambda x: x[1], reverse=True)
+        # Sort by relative position (ascending)
+        var_list.sort(key=lambda x: x[1])
         
         # Get the original sequence
         segment_seq = segments[seg_id]
@@ -608,9 +618,19 @@ def apply_variants_to_segments(segments, variants, segment_offsets, path_segment
         
         segment_log = []
         
-        # Apply variants
+        # Track applied variants and their positions to detect conflicts
+        applied_variants = []
+        
+        # Apply variants from left to right (ascending position)
         for variant, rel_pos, orientation in var_list:
-            expected_ref = segment_seq[rel_pos:rel_pos + len(variant['ref'])]
+            # Adjust position based on previous modifications
+            adjusted_pos = rel_pos
+            for applied_var, applied_pos, applied_len_diff in applied_variants:
+                if applied_pos < rel_pos:
+                    adjusted_pos += applied_len_diff
+            
+            # Get the expected reference at the adjusted position
+            expected_ref = segment_seq[adjusted_pos:adjusted_pos + len(variant['ref'])]
             
             # Check for reference match
             if expected_ref != variant['ref']:
@@ -627,9 +647,10 @@ def apply_variants_to_segments(segments, variants, segment_offsets, path_segment
                         alignment_score = alignments[0].score / (2 * max(len(expected_ref), len(variant['ref'])))
                 
                 if alignment_score < match_threshold:
-                    msg = f"Reference mismatch for {variant['id']} in segment {seg_id} at position {rel_pos}."
+                    msg = f"Reference mismatch for {variant['id']} in segment {seg_id} at position {adjusted_pos}."
                     msg += f"\n  Expected: {variant['ref']}, Found: {expected_ref}"
                     msg += f"\n  Similarity score: {alignment_score:.2f}"
+                    msg += f"\n  Original position: {rel_pos}, Adjusted position: {adjusted_pos}"
                     
                     if not allow_mismatches:
                         logging.error(msg)
@@ -643,24 +664,33 @@ def apply_variants_to_segments(segments, variants, segment_offsets, path_segment
             old_seq = segment_seq
             
             if variant['type'] == 'SNP':
-                logging.debug(f"Applying SNP {variant['id']}: {variant['ref']} -> {variant['alt']} at position {rel_pos}")
-                segment_seq = segment_seq[:rel_pos] + variant['alt'] + segment_seq[rel_pos + len(variant['ref']):]
+                logging.debug(f"Applying SNP {variant['id']}: {variant['ref']} -> {variant['alt']} at position {adjusted_pos}")
+                segment_seq = segment_seq[:adjusted_pos] + variant['alt'] + segment_seq[adjusted_pos + len(variant['ref']):]
+                len_diff = len(variant['alt']) - len(variant['ref'])
             elif variant['type'] in ['INV', 'MNP']:
-                logging.debug(f"Applying {variant['type']} {variant['id']}: {variant['ref']} -> {variant['alt']} at position {rel_pos}")
-                segment_seq = segment_seq[:rel_pos] + variant['alt'] + segment_seq[rel_pos + len(variant['ref']):]
+                logging.debug(f"Applying {variant['type']} {variant['id']}: {variant['ref']} -> {variant['alt']} at position {adjusted_pos}")
+                segment_seq = segment_seq[:adjusted_pos] + variant['alt'] + segment_seq[adjusted_pos + len(variant['ref']):]
+                len_diff = len(variant['alt']) - len(variant['ref'])
             elif variant['type'] == 'DEL':
-                logging.debug(f"Applying DEL {variant['id']}: Removing {len(variant['ref'])} bp at position {rel_pos}")
-                segment_seq = segment_seq[:rel_pos] + (variant['alt'] if variant['alt'] != '.' else '') + segment_seq[rel_pos + len(variant['ref']):]
+                logging.debug(f"Applying DEL {variant['id']}: Removing {len(variant['ref'])} bp at position {adjusted_pos}")
+                segment_seq = segment_seq[:adjusted_pos] + (variant['alt'] if variant['alt'] != '.' else '') + segment_seq[adjusted_pos + len(variant['ref']):]
+                len_diff = len(variant['alt']) - len(variant['ref'])
             elif variant['type'] == 'INS':
-                logging.debug(f"Applying INS {variant['id']}: Inserting {len(variant['alt'])-1} bp at position {rel_pos}")
+                logging.debug(f"Applying INS {variant['id']}: Inserting {len(variant['alt'])-1} bp at position {adjusted_pos}")
                 # Handle INS where ref is the base before insertion
                 if len(variant['ref']) == 1:
-                    segment_seq = segment_seq[:rel_pos + 1] + variant['alt'][1:] + segment_seq[rel_pos + 1:]
+                    segment_seq = segment_seq[:adjusted_pos + 1] + variant['alt'][1:] + segment_seq[adjusted_pos + 1:]
+                    len_diff = len(variant['alt']) - 1
                 else:
-                    segment_seq = segment_seq[:rel_pos] + variant['alt'] + segment_seq[rel_pos + len(variant['ref']):]
+                    segment_seq = segment_seq[:adjusted_pos] + variant['alt'] + segment_seq[adjusted_pos + len(variant['ref']):]
+                    len_diff = len(variant['alt']) - len(variant['ref'])
             else:
-                logging.debug(f"Applying generic variant {variant['id']} ({variant['type']}): {variant['ref']} -> {variant['alt']} at position {rel_pos}")
-                segment_seq = segment_seq[:rel_pos] + variant['alt'] + segment_seq[rel_pos + len(variant['ref']):]
+                logging.debug(f"Applying generic variant {variant['id']} ({variant['type']}): {variant['ref']} -> {variant['alt']} at position {adjusted_pos}")
+                segment_seq = segment_seq[:adjusted_pos] + variant['alt'] + segment_seq[adjusted_pos + len(variant['ref']):]
+                len_diff = len(variant['alt']) - len(variant['ref'])
+            
+            # Track this variant for future position adjustments
+            applied_variants.append((variant, adjusted_pos, len_diff))
             
             # Log the change
             segment_log.append({
@@ -1126,6 +1156,11 @@ def export_sequences(segments, original_path, modified_path, output_prefix, form
 
 def main():
     """Main function to run the VCF to GFA conversion."""
+    # Check for required dependencies
+    if not CYVCF2_AVAILABLE:
+        logging.error("cyvcf2 is required for VCF parsing. Please install with: pip install cyvcf2")
+        return 1
+    
     parser = argparse.ArgumentParser(description='Convert VCF variants to new paths in GFA.')
     parser.add_argument('gfa_file', help='Input GFA file')
     parser.add_argument('vcf_file', help='Input VCF file with variants')

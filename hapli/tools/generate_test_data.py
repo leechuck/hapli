@@ -219,19 +219,23 @@ def generate_gff3(output_file, sequence_length=10000, num_genes=5, num_exons_per
     return num_genes, num_exons_per_gene
 
 def generate_hgvs_notation(variant):
-    """Generate HGVS notation for a variant."""
+    """Generate HGVS notation for a variant that's compatible with the hgvs library."""
     var_type = variant['type']
     pos = variant['pos']
     
+    # Use NC_000001.11 as a dummy accession for chromosome 1
+    accession = "NC_000001.11"
+    
     if var_type == 'SNP':
-        # Format: g.100A>G
-        return f"g.{pos}{variant['ref']}>{variant['alt']}"
+        # Format: NC_000001.11:g.100A>G
+        return f"{accession}:g.{pos}{variant['ref']}>{variant['alt']}"
     elif var_type == 'INS':
-        # Format: g.100_101insACGT
-        return f"g.{pos}_{pos+1}ins{variant['alt'][1:]}"
+        # Format: NC_000001.11:g.100_101insACGT
+        return f"{accession}:g.{pos}_{pos+1}ins{variant['alt'][1:]}"
     elif var_type == 'DEL':
-        # Format: g.100_105del
-        return f"g.{pos}_{pos+len(variant['ref'])-1}del"
+        # Format: NC_000001.11:g.100_105del
+        end_pos = pos + len(variant['ref']) - 1
+        return f"{accession}:g.{pos}_{end_pos}del"
     return ""
 
 def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_types=None,
@@ -244,16 +248,53 @@ def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_ty
     
     # Generate variants
     variants = []
-    positions = set()
+    # Track positions and regions to avoid overlaps
+    used_regions = []  # List of (start, end) tuples
     
     for i in range(1, num_variants + 1):
-        # Choose a random position
-        while True:
+        # Choose a random position that doesn't overlap with existing variants
+        max_attempts = 100
+        attempts = 0
+        valid_pos = False
+        
+        while not valid_pos and attempts < max_attempts:
+            attempts += 1
             pos = random.randint(10, sequence_length - 20)
-            # Ensure positions are at least 10bp apart
-            if all(abs(pos - p) >= 10 for p in positions):
-                positions.add(pos)
-                break
+            
+            # Determine potential variant size (for checking overlaps)
+            var_type = random.choice(variant_types)
+            if var_type == 'DEL':
+                # For deletions, reserve more space
+                del_length = random.randint(1, 10)
+                region_start = pos
+                region_end = pos + del_length
+            elif var_type == 'INS':
+                # For insertions, just reserve the position
+                region_start = pos
+                region_end = pos + 1
+            else:  # SNP
+                region_start = pos
+                region_end = pos + 1
+            
+            # Add buffer zone to prevent nearby variants
+            buffer = 20  # Buffer zone around variants
+            check_start = region_start - buffer
+            check_end = region_end + buffer
+            
+            # Check if this region overlaps with any existing variant
+            overlaps = False
+            for start, end in used_regions:
+                if (check_start <= end and check_end >= start):
+                    overlaps = True
+                    break
+            
+            if not overlaps:
+                valid_pos = True
+                used_regions.append((region_start, region_end))
+        
+        if not valid_pos:
+            logging.warning(f"Could not find non-overlapping position for variant {i} after {max_attempts} attempts")
+            continue
         
         # Choose a variant type
         var_type = random.choice(variant_types)
