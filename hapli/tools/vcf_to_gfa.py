@@ -1,40 +1,29 @@
 #!/usr/bin/env python3
 """
-This script is a wrapper around hapli.tools.vcf_to_gfa
+Convert variants from VCF to new paths in GFA format.
 
-This file is kept for backward compatibility but will be removed in a future version.
-Please use the module directly: python -m hapli.tools.vcf_to_gfa
+This script parses VCF variants and applies them to create alternate paths in GFA.
+It supports multi-sample VCFs and can create paths for phased/unphased haplotypes.
+
+Usage:
+  python -m hapli.tools.vcf_to_gfa [options] <gfa_file> <vcf_file> <output_file>
 """
 
+import argparse
+import logging
 import os
 import sys
-import warnings
+import time
+from collections import defaultdict
+import multiprocessing as mp
 
-# Add parent directory to path to allow importing from hapli
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
-
-# Show deprecation warning
-warnings.warn(
-    "This script is now a wrapper around hapli.tools.vcf_to_gfa. "
-    "Please use the module directly: python -m hapli.tools.vcf_to_gfa",
-    DeprecationWarning,
-    stacklevel=2
-)
-
-# Import and run the main function from the module
-from hapli.tools.vcf_to_gfa import main
-
-if __name__ == "__main__":
-    sys.exit(main())
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from Bio import pairwise2
 
 def setup_logging(debug=False, log_file=None, verbose=False):
-    """Configure logging based on debug flag and optional log file.
-    
-    Args:
-        debug (bool): Enable debug mode logging
-        log_file (str): Optional file path for logging
-        verbose (bool): Enable verbose output without full debug
-    """
+    """Configure logging based on debug flag and optional log file."""
     if debug:
         log_level = logging.DEBUG
         log_format = '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
@@ -246,7 +235,7 @@ def reverse_complement(sequence):
     return str(seq_obj.reverse_complement())
 
 def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None):
-    """Parse VCF file and extract variants using hgvs library.
+    """Parse VCF file and extract variants.
     
     Args:
         vcf_file (str): Path to the VCF file
@@ -263,7 +252,6 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
     variants = []
     samples = []
     format_fields = []
-    parser = hgvs.parser.Parser()
     
     start_time = time.time()
     logging.info(f"Parsing VCF file: {vcf_file}")
@@ -401,22 +389,6 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                 except ValueError:
                     logging.warning(f"Line {line_num}: Invalid END position: {info_dict.get('END')}")
                     end_pos = pos + len(ref) - 1
-                    
-                hgvs_notation = info_dict.get('HGVS', '')
-                hgvs_obj = None
-                
-                # Parse the HGVS notation using the hgvs library
-                if hgvs_notation:
-                    try:
-                        hgvs_obj = parser.parse_hgvs_variant(hgvs_notation)
-                        logging.debug(f"Parsed HGVS: {hgvs_notation} -> {hgvs_obj}")
-                    except Exception as e:
-                        error_msg = f"Could not parse HGVS notation for {current_id}: {e}"
-                        if strict_hgvs:
-                            logging.error(error_msg)
-                            raise ValueError(error_msg)
-                        else:
-                            logging.warning(error_msg)
                 
                 # Process genotype data for this allele
                 genotypes = []
@@ -458,12 +430,10 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                     'alt': alt_allele,
                     'type': variant_type,
                     'end': end_pos,
-                    'hgvs': hgvs_notation,
-                    'hgvs_obj': hgvs_obj,
-                    'info': info_dict,
                     'genotypes': genotypes,
                     'is_phased': is_phased,
                     'allele_index': idx + 1,
+                    'info': info_dict,
                     'line_num': line_num
                 }
                 
@@ -474,8 +444,8 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                 
                 logging.debug(f"Parsed variant: {current_id} {variant_type} at position {pos}")
     
-    # Sort variants by position (descending) to avoid position shifts
-    variants = sorted(variants, key=lambda v: v['pos'], reverse=True)
+    # Sort variants by position (ascending)
+    variants = sorted(variants, key=lambda v: v['pos'])
     
     elapsed = time.time() - start_time
     logging.info(f"Finished parsing VCF in {elapsed:.2f}s: {len(variants)} variants")
@@ -843,7 +813,7 @@ def generate_new_gfa(original_segments, modified_segments, links, paths, new_pat
         # Write header with metadata
         if add_metadata:
             timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-            f.write(f"H\tVN:Z:1.0\tTS:Z:{timestamp}\tPG:Z:vcf_to_gfa.py\n")
+            f.write(f"H\tVN:Z:1.0\tTS:Z:{timestamp}\tPG:Z:hapli.tools.vcf_to_gfa\n")
         else:
             f.write("H\tVN:Z:1.0\n")
         
@@ -937,8 +907,7 @@ def generate_new_gfa(original_segments, modified_segments, links, paths, new_pat
                 links_written += 1
                 logging.debug(f"Wrote original link {from_id}{from_dir} -> {to_id}{to_dir}")
 
-
-# Helper function to create links for a path
+        # Helper function to create links for a path
         def create_links_for_path(path):
             links_created = 0
             for i in range(len(path) - 1):
@@ -1047,94 +1016,6 @@ def generate_new_gfa(original_segments, modified_segments, links, paths, new_pat
     
     return True
 
-def write_variant_report(variant_log, report_file, include_sequences=True, format='markdown'):
-    """Write a detailed report of variant applications.
-    
-    Args:
-        variant_log (list): List of variant application log entries
-        report_file (str): Output report file path
-        include_sequences (bool): Whether to include sequence context
-        format (str): Output format ('markdown', 'tsv', or 'json')
-    """
-    start_time = time.time()
-    
-    if format == 'markdown':
-        with open(report_file, 'w') as f:
-            f.write("# Variant Application Report\n\n")
-            
-            # Group variants by segment
-            variants_by_segment = defaultdict(list)
-            for entry in variant_log:
-                variants_by_segment[entry['segment_id']].append(entry)
-            
-            # Write summary table
-            f.write("## Summary\n\n")
-            f.write("| Segment | Variants Applied |\n")
-            f.write("|---------|------------------|\n")
-            for seg_id, variants in variants_by_segment.items():
-                f.write(f"| {seg_id} | {len(variants)} |\n")
-            f.write("\n")
-            
-            # Write detailed variant information
-            f.write("## Variant Details\n\n")
-            for entry in variant_log:
-                f.write(f"### Variant: {entry['variant_id']} ({entry['type']})\n")
-                f.write(f"Segment: {entry['segment_id']}\n")
-                f.write(f"Position: {entry['position']} (relative: {entry['rel_position']})\n")
-                f.write(f"Orientation: {entry['orientation']}\n")
-                f.write(f"Reference: {entry['ref']}\n")
-                f.write(f"Alternate: {entry['alt']}\n")
-                
-                if include_sequences:
-                    f.write("Sequence context before:\n")
-                    f.write(f"```\n{entry['seq_before']}\n```\n")
-                    f.write("Sequence context after:\n")
-                    f.write(f"```\n{entry['seq_after']}\n```\n")
-                f.write("\n")
-    
-    elif format == 'tsv':
-        with open(report_file, 'w') as f:
-            # Write header
-            header = ["variant_id", "segment_id", "position", "rel_position", "orientation", 
-                     "type", "ref", "alt"]
-            if include_sequences:
-                header.extend(["seq_before", "seq_after"])
-            f.write('\t'.join(header) + '\n')
-            
-            # Write data
-            for entry in variant_log:
-                row = [
-                    entry['variant_id'],
-                    entry['segment_id'],
-                    str(entry['position']),
-                    str(entry['rel_position']),
-                    entry['orientation'],
-                    entry['type'],
-                    entry['ref'],
-                    entry['alt']
-                ]
-                if include_sequences:
-                    row.extend([entry['seq_before'], entry['seq_after']])
-                f.write('\t'.join(row) + '\n')
-    
-    elif format == 'json':
-        import json
-        with open(report_file, 'w') as f:
-            if not include_sequences:
-                # Remove sequence fields if not requested
-                for entry in variant_log:
-                    entry.pop('seq_before', None)
-                    entry.pop('seq_after', None)
-            json.dump(variant_log, f, indent=2)
-    
-    else:
-        logging.error(f"Unknown report format: {format}")
-        return False
-    
-    elapsed = time.time() - start_time
-    logging.info(f"Variant report written to {report_file} in {elapsed:.2f}s")
-    return True
-
 def export_sequences(segments, original_path, modified_path, output_prefix, format='fasta'):
     """Export reference and modified sequences to FASTA/GenBank files using BioPython.
     
@@ -1208,88 +1089,6 @@ def export_sequences(segments, original_path, modified_path, output_prefix, form
     
     return ref_file, alt_file
 
-def compare_sequences(ref_file, alt_file, output_file=None):
-    """Compare reference and alternate sequences using BioPython.
-    
-    Args:
-        ref_file (str): Path to reference sequence file
-        alt_file (str): Path to alternate sequence file
-        output_file (str): Optional path to write alignment results
-        
-    Returns:
-        dict: Comparison statistics
-    """
-    # Read sequences
-    ref_record = SeqIO.read(ref_file, "fasta")
-    alt_record = SeqIO.read(alt_file, "fasta")
-    
-    ref_seq = str(ref_record.seq)
-    alt_seq = str(alt_record.seq)
-    
-    # Calculate basic statistics
-    ref_len = len(ref_seq)
-    alt_len = len(alt_seq)
-    length_diff = alt_len - ref_len
-    
-    logging.info(f"Comparing sequences:")
-    logging.info(f"  Reference length: {ref_len} bp")
-    logging.info(f"  Alternate length: {alt_len} bp")
-    logging.info(f"  Length difference: {length_diff} bp ({(length_diff/ref_len*100):.2f}%)")
-    
-    # Count nucleotide composition
-    ref_composition = {base: ref_seq.count(base) for base in 'ACGTN'}
-    alt_composition = {base: alt_seq.count(base) for base in 'ACGTN'}
-    
-    # Perform sequence alignment to find differences
-    alignments = pairwise2.align.globalms(
-        ref_seq[:10000] if len(ref_seq) > 10000 else ref_seq,  # Limit size for performance
-        alt_seq[:10000] if len(alt_seq) > 10000 else alt_seq,
-        2, -1, -2, -0.5,  # Match, mismatch, gap penalties
-        one_alignment_only=True
-    )
-    
-    # Calculate identity and similarity
-    if alignments:
-        alignment = alignments[0]
-        matches = sum(a == b for a, b in zip(alignment.seqA, alignment.seqB) 
-                      if a != '-' and b != '-')
-        aligned_length = sum(1 for a, b in zip(alignment.seqA, alignment.seqB) 
-                           if a != '-' or b != '-')
-        identity = matches / aligned_length if aligned_length > 0 else 0
-    else:
-        identity = 0
-    
-    logging.info(f"  Sequence identity: {identity:.2%}")
-    
-    # Write output if requested
-    if output_file:
-        with open(output_file, 'w') as f:
-            f.write("# Sequence Comparison Report\n\n")
-            f.write(f"Reference length: {ref_len} bp\n")
-            f.write(f"Alternate length: {alt_len} bp\n")
-            f.write(f"Length difference: {length_diff} bp ({(length_diff/ref_len*100):.2f}%)\n")
-            f.write(f"Sequence identity: {identity:.2%}\n\n")
-            
-            # Write composition table
-            f.write("## Nucleotide Composition\n\n")
-            f.write("| Base | Reference | Alternate | Difference |\n")
-            f.write("|------|-----------|-----------|------------|\n")
-            for base in 'ACGTN':
-                ref_count = ref_composition[base]
-                alt_count = alt_composition[base]
-                diff = alt_count - ref_count
-                diff_pct = (diff / ref_count * 100) if ref_count > 0 else float('inf')
-                f.write(f"| {base} | {ref_count} | {alt_count} | {diff:+} ({diff_pct:+.2f}%) |\n")
-    
-    return {
-        'ref_length': ref_len,
-        'alt_length': alt_len,
-        'length_diff': length_diff,
-        'identity': identity,
-        'ref_composition': ref_composition,
-        'alt_composition': alt_composition
-    }
-
 def main():
     """Main function to run the VCF to GFA conversion."""
     parser = argparse.ArgumentParser(description='Convert VCF variants to new paths in GFA.')
@@ -1300,19 +1099,14 @@ def main():
     # Input/output options
     parser.add_argument('--ref-path', default='REF', help='Name of the reference path in GFA (default: %(default)s)')
     parser.add_argument('--alt-path', default='ALT', help='Name for the alternate path in output GFA (default: %(default)s)')
-    parser.add_argument('--report', help='Write a detailed variant application report to this file')
-    parser.add_argument('--report-format', choices=['markdown', 'tsv', 'json'], default='markdown',
-                        help='Format for the variant report (default: %(default)s)')
     parser.add_argument('--export-sequences', help='Export reference and alternate sequences to FASTA files with this prefix')
     parser.add_argument('--seq-format', choices=['fasta', 'genbank'], default='fasta',
                         help='Format for exported sequences (default: %(default)s)')
-    parser.add_argument('--compare', action='store_true', help='Compare reference and alternate sequences')
     
     # Variant processing options
     parser.add_argument('--allow-mismatches', action='store_true', help='Allow reference mismatches when applying variants')
     parser.add_argument('--match-threshold', type=float, default=0.8, 
                         help='Minimum sequence similarity for fuzzy matching (default: %(default)s)')
-    parser.add_argument('--strict-hgvs', action='store_true', help='Fail on HGVS parse errors')
     parser.add_argument('--max-variants', type=int, help='Maximum number of variants to process')
     parser.add_argument('--chrom', help='Only process variants from this chromosome')
     
@@ -1343,8 +1137,6 @@ def main():
     # Setup logging
     logger = setup_logging(debug=args.debug, log_file=args.log_file, verbose=args.verbose)
 
-
-
     try:
         # Parse input files
         segments, links, paths = parse_gfa(args.gfa_file, validate=args.validate)
@@ -1366,7 +1158,6 @@ def main():
         # Parse variants
         variants, samples, format_fields = parse_vcf(
             args.vcf_file, 
-            strict_hgvs=args.strict_hgvs,
             max_variants=args.max_variants,
             chrom_filter=args.chrom
         )
@@ -1607,15 +1398,6 @@ def main():
             variant_log = all_variant_logs
             modified_segments = all_modified_segments
         
-        # Write variant report if requested
-        if args.report and variant_log:
-            write_variant_report(
-                variant_log, 
-                args.report, 
-                include_sequences=True,
-                format=args.report_format
-            )
-        
         # Export sequences if requested
         if args.export_sequences:
             if not samples or (not args.respect_phasing and not args.haplotype_paths):
@@ -1627,11 +1409,6 @@ def main():
                     args.export_sequences,
                     format=args.seq_format
                 )
-                
-                # Compare sequences if requested
-                if args.compare and ref_file and alt_file:
-                    compare_file = f"{args.export_sequences}_comparison.md"
-                    compare_sequences(ref_file, alt_file, compare_file)
             else:
                 # Export sample-specific paths
                 for sample in samples:

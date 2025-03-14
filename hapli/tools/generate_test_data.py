@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+"""
+Generate test data for hapli.
+
+This script generates synthetic test data for testing hapli functionality:
+- GFA files with reference and alternate paths
+- GFF3 files with genomic features
+- VCF files with variants
+
+Usage:
+  python -m hapli.tools.generate_test_data [options]
+"""
+
+import argparse
+import logging
+import os
+import random
+import sys
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+import time
+from collections import defaultdict
+
+def setup_logging(debug=False, log_file=None, verbose=False):
+    """Configure logging based on debug flag and optional log file."""
+    if debug:
+        log_level = logging.DEBUG
+        log_format = '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+    elif verbose:
+        log_level = logging.INFO
+        log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    else:
+        log_level = logging.INFO
+        log_format = '%(message)s'
+    
+    # Configure root logger
+    logging.basicConfig(level=log_level, format=log_format)
+    logger = logging.getLogger()
+    
+    # Clear any existing handlers
+    logger.handlers = []
+    
+    # Add console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+    console_formatter = logging.Formatter(log_format)
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+    
+    # Add file handler if specified
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(log_level)
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+    
+    return logger
+
+def generate_random_sequence(length, gc_content=0.5):
+    """Generate a random DNA sequence with specified GC content."""
+    bases = []
+    for _ in range(length):
+        if random.random() < gc_content:
+            bases.append(random.choice(['G', 'C']))
+        else:
+            bases.append(random.choice(['A', 'T']))
+    return ''.join(bases)
+
+def generate_gfa(output_file, seq_length=10000, num_segments=5, num_variants=10, 
+                num_paths=2, variant_types=None):
+    """Generate a synthetic GFA file with segments, paths, and variants."""
+    if variant_types is None:
+        variant_types = ['SNP', 'INS', 'DEL']
+    
+    logging.info(f"Generating GFA file with {num_segments} segments and {num_variants} variants")
+    
+    # Generate segments
+    segments = {}
+    segment_length = seq_length // num_segments
+    for i in range(1, num_segments + 1):
+        seg_id = f"s{i}"
+        # Vary segment length slightly
+        length_variation = random.randint(-int(segment_length * 0.1), int(segment_length * 0.1))
+        actual_length = max(100, segment_length + length_variation)
+        segments[seg_id] = generate_random_sequence(actual_length)
+    
+    # Generate reference path
+    ref_path = [(seg_id, '+') for seg_id in segments.keys()]
+    
+    # Generate variants
+    variants = []
+    for i in range(1, num_variants + 1):
+        # Choose a random segment
+        seg_id = random.choice(list(segments.keys()))
+        segment_seq = segments[seg_id]
+        
+        # Choose a random position in the segment
+        pos = random.randint(1, len(segment_seq) - 10)
+        
+        # Choose a variant type
+        var_type = random.choice(variant_types)
+        
+        if var_type == 'SNP':
+            ref_base = segment_seq[pos-1]
+            alt_bases = [b for b in 'ACGT' if b != ref_base]
+            alt_base = random.choice(alt_bases)
+            variants.append({
+                'id': f"var{i}",
+                'type': 'SNP',
+                'segment': seg_id,
+                'position': pos,
+                'ref': ref_base,
+                'alt': alt_base
+            })
+        elif var_type == 'INS':
+            ref_base = segment_seq[pos-1]
+            ins_length = random.randint(1, 10)
+            ins_seq = generate_random_sequence(ins_length)
+            variants.append({
+                'id': f"var{i}",
+                'type': 'INS',
+                'segment': seg_id,
+                'position': pos,
+                'ref': ref_base,
+                'alt': ref_base + ins_seq
+            })
+        elif var_type == 'DEL':
+            del_length = random.randint(1, 10)
+            if pos + del_length <= len(segment_seq):
+                ref_seq = segment_seq[pos-1:pos+del_length]
+                alt_base = segment_seq[pos-1]
+                variants.append({
+                    'id': f"var{i}",
+                    'type': 'DEL',
+                    'segment': seg_id,
+                    'position': pos,
+                    'ref': ref_seq,
+                    'alt': alt_base
+                })
+    
+    # Create modified segments for variants
+    modified_segments = {}
+    for variant in variants:
+        seg_id = variant['segment']
+        if seg_id not in modified_segments:
+            modified_segments[seg_id] = segments[seg_id]
+        
+        # Apply variant to segment
+        segment_seq = modified_segments[seg_id]
+        pos = variant['position'] - 1  # Convert to 0-based
+        
+        if variant['type'] == 'SNP':
+            modified_segments[seg_id] = segment_seq[:pos] + variant['alt'] + segment_seq[pos+1:]
+        elif variant['type'] == 'INS':
+            modified_segments[seg_id] = segment_seq[:pos+1] + variant['alt'][1:] + segment_seq[pos+1:]
+        elif variant['type'] == 'DEL':
+            modified_segments[seg_id] = segment_seq[:pos] + variant['alt'] + segment_seq[pos+len(variant['ref']):]
+    
+    # Create alternate paths
+    alt_paths = []
+    for i in range(1, num_paths):
+        # Randomly select variants for this path
+        path_variants = random.sample(variants, min(len(variants), random.randint(1, len(variants))))
+        
+        # Create path segments
+        path_segments = []
+        for seg_id, orient in ref_path:
+            if any(v['segment'] == seg_id for v in path_variants):
+                # Use modified segment
+                path_segments.append((f"{seg_id}_alt{i}", orient))
+            else:
+                # Use original segment
+                path_segments.append((seg_id, orient))
+        
+        alt_paths.append((f"ALT{i}", path_segments))
+    
+    # Write GFA file
+    with open(output_file, 'w') as f:
+        # Write header
+        f.write("H\tVN:Z:1.0\n")
+        
+        # Write segments
+        for seg_id, seq in segments.items():
+            f.write(f"S\t{seg_id}\t{seq}\tLN:i:{len(seq)}\n")
+        
+        # Write modified segments
+        for i, alt_path in enumerate(alt_paths, 1):
+            for seg_id, orient in ref_path:
+                if any(alt_seg[0] == f"{seg_id}_alt{i}" for alt_seg in alt_path[1]):
+                    mod_seg_id = f"{seg_id}_alt{i}"
+                    f.write(f"S\t{mod_seg_id}\t{modified_segments[seg_id]}\tLN:i:{len(modified_segments[seg_id])}\n")
+        
+        # Write links
+        for i in range(len(ref_path) - 1):
+            from_seg, from_orient = ref_path[i]
+            to_seg, to_orient = ref_path[i + 1]
+            f.write(f"L\t{from_seg}\t{from_orient}\t{to_seg}\t{to_orient}\t0M\n")
+        
+        # Write links for alternate paths
+        for path_name, path_segments in alt_paths:
+            for i in range(len(path_segments) - 1):
+                from_seg, from_orient = path_segments[i]
+                to_seg, to_orient = path_segments[i + 1]
+                f.write(f"L\t{from_seg}\t{from_orient}\t{to_seg}\t{to_orient}\t0M\n")
+        
+        # Write paths
+        ref_path_str = ','.join(f"{seg_id}{orient}" for seg_id, orient in ref_path)
+        f.write(f"P\tREF\t{ref_path_str}\t*\n")
+        
+        for path_name, path_segments in alt_paths:
+            path_str = ','.join(f"{seg_id}{orient}" for seg_id, orient in path_segments)
+            f.write(f"P\t{path_name}\t{path_str}\t*\n")
+    
+    logging.info(f"Generated GFA file: {output_file}")
+    logging.info(f"  Segments: {len(segments)}")
+    logging.info(f"  Variants: {len(variants)}")
+    logging.info(f"  Paths: {1 + len(alt_paths)}")
+    
+    return segments, variants, ref_path, alt_paths
+
+def generate_gff3(output_file, sequence_length=10000, num_genes=5, num_exons_per_gene=3):
+    """Generate a synthetic GFF3 file with gene features."""
+    logging.info(f"Generating GFF3 file with {num_genes} genes")
+    
+    # Calculate gene distribution
+    gene_length = sequence_length // (num_genes * 2)  # Leave space between genes
+    
+    with open(output_file, 'w') as f:
+        # Write GFF3 header
+        f.write("##gff-version 3\n")
+        f.write(f"##sequence-region 1 1 {sequence_length}\n")
+        
+        # Generate genes
+        for i in range(1, num_genes + 1):
+            # Calculate gene position
+            gene_start = i * (sequence_length // (num_genes + 1))
+            gene_start = max(1, gene_start - gene_length // 2)
+            gene_end = min(sequence_length, gene_start + gene_length)
+            
+            # Randomly choose strand
+            strand = '+' if random.random() > 0.3 else '-'
+            
+            # Write gene feature
+            gene_id = f"gene{i}"
+            f.write(f"1\thapli\tgene\t{gene_start}\t{gene_end}\t.\t{strand}\t.\tID={gene_id};Name=gene_{i}\n")
+            
+            # Write mRNA feature
+            mrna_id = f"mRNA{i}"
+            f.write(f"1\thapli\tmRNA\t{gene_start}\t{gene_end}\t.\t{strand}\t.\tID={mrna_id};Parent={gene_id}\n")
+            
+            # Generate exons
+            exon_length = (gene_end - gene_start) // num_exons_per_gene
+            for j in range(1, num_exons_per_gene + 1):
+                exon_start = gene_start + (j - 1) * exon_length
+                exon_end = exon_start + exon_length - 10  # Leave small gaps between exons
+                
+                # Write exon feature
+                exon_id = f"exon{i}.{j}"
+                f.write(f"1\thapli\texon\t{exon_start}\t{exon_end}\t.\t{strand}\t.\tID={exon_id};Parent={mrna_id}\n")
+                
+                # Write CDS feature (same as exon for simplicity)
+                cds_id = f"cds{i}.{j}"
+                f.write(f"1\thapli\tCDS\t{exon_start}\t{exon_end}\t.\t{strand}\t0\tID={cds_id};Parent={mrna_id}\n")
+    
+    logging.info(f"Generated GFF3 file: {output_file}")
+    logging.info(f"  Genes: {num_genes}")
+    logging.info(f"  Exons per gene: {num_exons_per_gene}")
+    
+    return num_genes, num_exons_per_gene
+
+def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_types=None,
+                num_samples=2, phased=True):
+    """Generate a synthetic VCF file with variants."""
+    if variant_types is None:
+        variant_types = ['SNP', 'INS', 'DEL']
+    
+    logging.info(f"Generating VCF file with {num_variants} variants for {num_samples} samples")
+    
+    with open(output_file, 'w') as f:
+        # Write VCF header
+        f.write("##fileformat=VCFv4.2\n")
+        f.write("##source=hapli_test_data_generator\n")
+        f.write("##reference=synthetic\n")
+        f.write('##INFO=<ID=TYPE,Number=1,Type=String,Description="Type of variant">\n')
+        f.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
+        
+        # Write column headers
+        sample_names = [f"SAMPLE{i}" for i in range(1, num_samples + 1)]
+        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(sample_names) + "\n")
+        
+        # Generate variants
+        variants = []
+        positions = set()
+        
+        for i in range(1, num_variants + 1):
+            # Choose a random position
+            while True:
+                pos = random.randint(10, sequence_length - 20)
+                # Ensure positions are at least 10bp apart
+                if all(abs(pos - p) >= 10 for p in positions):
+                    positions.add(pos)
+                    break
+            
+            # Choose a variant type
+            var_type = random.choice(variant_types)
+            
+            if var_type == 'SNP':
+                ref_base = random.choice('ACGT')
+                alt_bases = [b for b in 'ACGT' if b != ref_base]
+                alt_base = random.choice(alt_bases)
+                variants.append({
+                    'id': f"var{i}",
+                    'type': 'SNP',
+                    'pos': pos,
+                    'ref': ref_base,
+                    'alt': alt_base
+                })
+            elif var_type == 'INS':
+                ref_base = random.choice('ACGT')
+                ins_length = random.randint(1, 10)
+                ins_seq = generate_random_sequence(ins_length)
+                variants.append({
+                    'id': f"var{i}",
+                    'type': 'INS',
+                    'pos': pos,
+                    'ref': ref_base,
+                    'alt': ref_base + ins_seq
+                })
+            elif var_type == 'DEL':
+                del_length = random.randint(1, 10)
+                ref_seq = generate_random_sequence(del_length + 1)
+                alt_base = ref_seq[0]
+                variants.append({
+                    'id': f"var{i}",
+                    'type': 'DEL',
+                    'pos': pos,
+                    'ref': ref_seq,
+                    'alt': alt_base
+                })
+        
+        # Sort variants by position
+        variants.sort(key=lambda v: v['pos'])
+        
+        # Write variants
+        for variant in variants:
+            # Generate genotypes for each sample
+            genotypes = []
+            for _ in range(num_samples):
+                # Randomly assign genotype
+                if random.random() < 0.7:  # 70% chance of having the variant
+                    if random.random() < 0.5:  # 50% chance of heterozygous
+                        gt = "0|1" if phased else "0/1"
+                    else:  # Homozygous alt
+                        gt = "1|1" if phased else "1/1"
+                else:  # Homozygous ref
+                    gt = "0|0" if phased else "0/0"
+                genotypes.append(gt)
+            
+            # Write VCF line
+            f.write(f"1\t{variant['pos']}\t{variant['id']}\t{variant['ref']}\t{variant['alt']}\t.\tPASS\t")
+            f.write(f"TYPE={variant['type']}\tGT\t{'\t'.join(genotypes)}\n")
+    
+    logging.info(f"Generated VCF file: {output_file}")
+    logging.info(f"  Variants: {len(variants)}")
+    logging.info(f"  Samples: {num_samples}")
+    
+    return variants, sample_names
+
+def generate_fasta(output_file, sequence_length=10000, num_sequences=1):
+    """Generate a synthetic FASTA file with random sequences."""
+    logging.info(f"Generating FASTA file with {num_sequences} sequences")
+    
+    sequences = []
+    for i in range(1, num_sequences + 1):
+        seq_id = f"seq{i}"
+        seq = generate_random_sequence(sequence_length)
+        
+        record = SeqRecord(
+            Seq(seq),
+            id=seq_id,
+            name=seq_id,
+            description=f"Synthetic sequence {i} of length {sequence_length}"
+        )
+        sequences.append(record)
+    
+    # Write to file
+    with open(output_file, 'w') as f:
+        SeqIO.write(sequences, f, "fasta")
+    
+    logging.info(f"Generated FASTA file: {output_file}")
+    logging.info(f"  Sequences: {num_sequences}")
+    logging.info(f"  Length: {sequence_length}")
+    
+    return sequences
+
+def generate_test_dataset(output_dir, prefix="test", sequence_length=10000):
+    """Generate a complete test dataset with GFA, GFF3, VCF, and FASTA files."""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate FASTA file
+    fasta_file = os.path.join(output_dir, f"{prefix}.fa")
+    generate_fasta(fasta_file, sequence_length)
+    
+    # Generate GFA file
+    gfa_file = os.path.join(output_dir, f"{prefix}.gfa")
+    generate_gfa(gfa_file, sequence_length)
+    
+    # Generate GFF3 file
+    gff_file = os.path.join(output_dir, f"{prefix}.gff3")
+    generate_gff3(gff_file, sequence_length)
+    
+    # Generate VCF file
+    vcf_file = os.path.join(output_dir, f"{prefix}.vcf")
+    generate_vcf(vcf_file, sequence_length)
+    
+    logging.info(f"Generated complete test dataset in {output_dir}")
+    logging.info(f"  FASTA: {fasta_file}")
+    logging.info(f"  GFA: {gfa_file}")
+    logging.info(f"  GFF3: {gff_file}")
+    logging.info(f"  VCF: {vcf_file}")
+    
+    return {
+        'fasta': fasta_file,
+        'gfa': gfa_file,
+        'gff3': gff_file,
+        'vcf': vcf_file
+    }
+
+def main():
+    """Main function to run the test data generator."""
+    parser = argparse.ArgumentParser(description='Generate test data for hapli.')
+    parser.add_argument('--output-dir', default='testdata', help='Output directory for test files')
+    parser.add_argument('--prefix', default='test', help='Prefix for output files')
+    parser.add_argument('--length', type=int, default=10000, help='Length of reference sequence')
+    
+    # File-specific options
+    parser.add_argument('--gfa', action='store_true', help='Generate GFA file')
+    parser.add_argument('--gff3', action='store_true', help='Generate GFF3 file')
+    parser.add_argument('--vcf', action='store_true', help='Generate VCF file')
+    parser.add_argument('--fasta', action='store_true', help='Generate FASTA file')
+    
+    # GFA options
+    parser.add_argument('--segments', type=int, default=5, help='Number of segments in GFA')
+    parser.add_argument('--variants', type=int, default=10, help='Number of variants')
+    parser.add_argument('--paths', type=int, default=2, help='Number of paths in GFA')
+    
+    # GFF3 options
+    parser.add_argument('--genes', type=int, default=5, help='Number of genes in GFF3')
+    parser.add_argument('--exons', type=int, default=3, help='Number of exons per gene')
+    
+    # VCF options
+    parser.add_argument('--samples', type=int, default=2, help='Number of samples in VCF')
+    parser.add_argument('--unphased', action='store_true', help='Generate unphased genotypes')
+    
+    # Debug and logging options
+    parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose output without full debug')
+    parser.add_argument('--log-file', help='Write log to this file')
+    parser.add_argument('--seed', type=int, help='Random seed for reproducible data generation')
+    
+    args = parser.parse_args()
+    
+    # Setup logging
+    setup_logging(debug=args.debug, log_file=args.log_file, verbose=args.verbose)
+    
+    # Set random seed if provided
+    if args.seed:
+        random.seed(args.seed)
+        logging.info(f"Using random seed: {args.seed}")
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    try:
+        # Generate all files by default if no specific file type is requested
+        generate_all = not (args.gfa or args.gff3 or args.vcf or args.fasta)
+        
+        if generate_all:
+            generate_test_dataset(args.output_dir, args.prefix, args.length)
+        else:
+            # Generate requested file types
+            if args.fasta:
+                fasta_file = os.path.join(args.output_dir, f"{args.prefix}.fa")
+                generate_fasta(fasta_file, args.length)
+            
+            if args.gfa:
+                gfa_file = os.path.join(args.output_dir, f"{args.prefix}.gfa")
+                generate_gfa(gfa_file, args.length, args.segments, args.variants, args.paths)
+            
+            if args.gff3:
+                gff_file = os.path.join(args.output_dir, f"{args.prefix}.gff3")
+                generate_gff3(gff_file, args.length, args.genes, args.exons)
+            
+            if args.vcf:
+                vcf_file = os.path.join(args.output_dir, f"{args.prefix}.vcf")
+                generate_vcf(vcf_file, args.length, args.variants, None, args.samples, not args.unphased)
+        
+        logging.info("Test data generation completed successfully")
+        return 0
+        
+    except Exception as e:
+        logging.error(f"Error during test data generation: {e}")
+        if args.debug:
+            import traceback
+            logging.error(traceback.format_exc())
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
