@@ -4,6 +4,7 @@ Text report generation for variant effects.
 
 import sys
 import logging
+from collections import defaultdict
 from collections import Counter
 
 def generate_variant_effect_report(feature_effects, variants, outfile=None, sample_name=None, sample_effects=None):
