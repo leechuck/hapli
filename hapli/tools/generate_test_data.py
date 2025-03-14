@@ -91,19 +91,74 @@ def generate_gfa(output_file, seq_length=10000, num_segments=5, num_variants=10,
     # Generate reference path
     ref_path = [(seg_id, '+') for seg_id in segments.keys()]
     
+    # Build reference sequence and segment offsets for accurate variant positioning
+    reference_seq = ""
+    segment_offsets = {}
+    current_offset = 0
+    
+    for seg_id, orientation in ref_path:
+        segment_seq = segments[seg_id]
+        segment_offsets[seg_id] = (current_offset, current_offset + len(segment_seq) - 1, orientation)
+        reference_seq += segment_seq
+        current_offset += len(segment_seq)
+    
     # Generate variants for VCF (not used in GFA, but returned for VCF generation)
     variants = []
+    # Track positions and regions to avoid overlaps
+    used_regions = []  # List of (start, end) tuples
+    
     for i in range(1, num_variants + 1):
         # Choose a random segment
         seg_id = random.choice(list(segments.keys()))
         segment_seq = segments[seg_id]
         
-        # Choose a random position in the segment
-        pos = random.randint(1, len(segment_seq) - 10)
+        # Choose a random position in the segment that doesn't overlap with existing variants
+        max_attempts = 100
+        attempts = 0
+        valid_pos = False
         
-        # Choose a variant type
-        var_type = random.choice(variant_types)
+        while not valid_pos and attempts < max_attempts:
+            attempts += 1
+            pos = random.randint(1, len(segment_seq) - 10)
+            
+            # Determine potential variant size (for checking overlaps)
+            var_type = random.choice(variant_types)
+            if var_type == 'DEL':
+                # For deletions, reserve more space
+                del_length = random.randint(1, 10)
+                if pos + del_length > len(segment_seq):
+                    continue  # Skip if deletion would go beyond segment end
+                region_start = pos
+                region_end = pos + del_length
+            elif var_type == 'INS':
+                # For insertions, just reserve the position
+                region_start = pos
+                region_end = pos + 1
+            else:  # SNP
+                region_start = pos
+                region_end = pos + 1
+            
+            # Add buffer zone to prevent nearby variants
+            buffer = 20  # Buffer zone around variants
+            check_start = region_start - buffer
+            check_end = region_end + buffer
+            
+            # Check if this region overlaps with any existing variant
+            overlaps = False
+            for start, end in used_regions:
+                if (check_start <= end and check_end >= start):
+                    overlaps = True
+                    break
+            
+            if not overlaps:
+                valid_pos = True
+                used_regions.append((region_start, region_end))
         
+        if not valid_pos:
+            logging.warning(f"Could not find non-overlapping position for variant {i} after {max_attempts} attempts")
+            continue
+        
+        # Create variant based on type, ensuring reference sequence matches
         if var_type == 'SNP':
             ref_base = segment_seq[pos-1]
             alt_bases = [b for b in 'ACGT' if b != ref_base]
@@ -129,18 +184,17 @@ def generate_gfa(output_file, seq_length=10000, num_segments=5, num_variants=10,
                 'alt': ref_base + ins_seq
             })
         elif var_type == 'DEL':
-            del_length = random.randint(1, 10)
-            if pos + del_length <= len(segment_seq):
-                ref_seq = segment_seq[pos-1:pos+del_length]
-                alt_base = segment_seq[pos-1]
-                variants.append({
-                    'id': f"var{i}",
-                    'type': 'DEL',
-                    'segment': seg_id,
-                    'position': pos,
-                    'ref': ref_seq,
-                    'alt': alt_base
-                })
+            del_length = random.randint(1, min(10, len(segment_seq) - pos))
+            ref_seq = segment_seq[pos-1:pos+del_length]
+            alt_base = segment_seq[pos-1]
+            variants.append({
+                'id': f"var{i}",
+                'type': 'DEL',
+                'segment': seg_id,
+                'position': pos,
+                'ref': ref_seq,
+                'alt': alt_base
+            })
     
     # Write GFA file
     with open(output_file, 'w') as f:
@@ -239,12 +293,30 @@ def generate_hgvs_notation(variant):
     return ""
 
 def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_types=None,
-                num_samples=2, phased=True):
-    """Generate a synthetic VCF file with variants using cyvcf2."""
+                num_samples=2, phased=True, reference_seq=None):
+    """Generate a synthetic VCF file with variants using cyvcf2.
+    
+    Args:
+        output_file: Path to output VCF file
+        sequence_length: Length of the reference sequence
+        num_variants: Number of variants to generate
+        variant_types: List of variant types to generate
+        num_samples: Number of samples in the VCF
+        phased: Whether to generate phased genotypes
+        reference_seq: Optional reference sequence to ensure variants match
+    """
     if variant_types is None:
         variant_types = ['SNP', 'INS', 'DEL']
     
     logging.info(f"Generating VCF file with {num_variants} variants for {num_samples} samples")
+    
+    # Generate reference sequence if not provided
+    if reference_seq is None:
+        reference_seq = generate_random_sequence(sequence_length)
+        logging.info(f"Generated random reference sequence of length {len(reference_seq)}")
+    else:
+        sequence_length = len(reference_seq)
+        logging.info(f"Using provided reference sequence of length {sequence_length}")
     
     # Generate variants
     variants = []
@@ -265,7 +337,7 @@ def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_ty
             var_type = random.choice(variant_types)
             if var_type == 'DEL':
                 # For deletions, reserve more space
-                del_length = random.randint(1, 10)
+                del_length = random.randint(1, min(10, sequence_length - pos - 5))
                 region_start = pos
                 region_end = pos + del_length
             elif var_type == 'INS':
@@ -296,11 +368,9 @@ def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_ty
             logging.warning(f"Could not find non-overlapping position for variant {i} after {max_attempts} attempts")
             continue
         
-        # Choose a variant type
-        var_type = random.choice(variant_types)
-        
+        # Create variant based on type, ensuring it matches the reference sequence
         if var_type == 'SNP':
-            ref_base = random.choice('ACGT')
+            ref_base = reference_seq[pos-1]  # Use actual reference base
             alt_bases = [b for b in 'ACGT' if b != ref_base]
             alt_base = random.choice(alt_bases)
             variants.append({
@@ -311,7 +381,7 @@ def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_ty
                 'alt': alt_base
             })
         elif var_type == 'INS':
-            ref_base = random.choice('ACGT')
+            ref_base = reference_seq[pos-1]  # Use actual reference base
             ins_length = random.randint(1, 10)
             ins_seq = generate_random_sequence(ins_length)
             variants.append({
@@ -322,9 +392,10 @@ def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_ty
                 'alt': ref_base + ins_seq
             })
         elif var_type == 'DEL':
-            del_length = random.randint(1, 10)
-            ref_seq = generate_random_sequence(del_length + 1)
-            alt_base = ref_seq[0]
+            # Ensure deletion doesn't go beyond sequence end
+            del_length = min(random.randint(1, 10), sequence_length - pos)
+            ref_seq = reference_seq[pos-1:pos+del_length]  # Use actual reference sequence
+            alt_base = reference_seq[pos-1]  # First base of the deletion
             variants.append({
                 'id': f"var{i}",
                 'type': 'DEL',
@@ -425,6 +496,46 @@ def generate_fasta(output_file, sequence_length=10000, num_sequences=1):
     
     return sequences
 
+def validate_variants_against_reference(variants, reference_seq):
+    """Validate that variants match the reference sequence.
+    
+    Args:
+        variants: List of variant dictionaries
+        reference_seq: Reference sequence string
+        
+    Returns:
+        tuple: (is_valid, list of error messages)
+    """
+    errors = []
+    is_valid = True
+    
+    for variant in variants:
+        pos = variant['pos'] - 1  # Convert to 0-based
+        ref = variant['ref']
+        
+        # Check if position is within reference bounds
+        if pos >= len(reference_seq):
+            errors.append(f"Variant {variant['id']} position {variant['pos']} is beyond reference length {len(reference_seq)}")
+            is_valid = False
+            continue
+            
+        # For deletions, check if the deletion extends beyond reference
+        if variant['type'] == 'DEL' and pos + len(ref) > len(reference_seq):
+            errors.append(f"Deletion variant {variant['id']} extends beyond reference end")
+            is_valid = False
+            continue
+        
+        # Extract actual reference sequence at variant position
+        actual_ref = reference_seq[pos:pos+len(ref)]
+        
+        # Compare with variant's reference allele
+        if actual_ref != ref:
+            errors.append(f"Reference mismatch for variant {variant['id']} at position {variant['pos']}: "
+                         f"Expected '{ref}', Found '{actual_ref}'")
+            is_valid = False
+    
+    return is_valid, errors
+
 def generate_test_dataset(output_dir, prefix="test", sequence_length=10000):
     """Generate a complete test dataset with GFA, GFF3, VCF, and FASTA files."""
     os.makedirs(output_dir, exist_ok=True)
@@ -476,6 +587,7 @@ def main():
     parser.add_argument('--output-dir', default='testdata', help='Output directory for test files')
     parser.add_argument('--prefix', default='test', help='Prefix for output files')
     parser.add_argument('--length', type=int, default=10000, help='Length of reference sequence')
+    parser.add_argument('--test', action='store_true', help='Run tests to verify variant generation')
     
     # File-specific options
     parser.add_argument('--gfa', action='store_true', help='Generate GFA file')
@@ -516,6 +628,17 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     try:
+        # Run tests if requested
+        if args.test:
+            logging.info("Running tests...")
+            test_result = test_variant_reference_matching()
+            if test_result:
+                logging.info("All tests passed!")
+                return 0
+            else:
+                logging.error("Tests failed!")
+                return 1
+        
         # Generate all files by default if no specific file type is requested
         generate_all = not (args.gfa or args.gff3 or args.vcf or args.fasta)
         
@@ -523,21 +646,39 @@ def main():
             generate_test_dataset(args.output_dir, args.prefix, args.length)
         else:
             # Generate requested file types
+            reference_seq = None
+            
+            # Generate FASTA first if requested
             if args.fasta:
                 fasta_file = os.path.join(args.output_dir, f"{args.prefix}.fa")
-                generate_fasta(fasta_file, args.length)
+                sequences = generate_fasta(fasta_file, args.length)
+                if sequences:
+                    reference_seq = str(sequences[0].seq)
             
+            # Generate GFA next
             if args.gfa:
                 gfa_file = os.path.join(args.output_dir, f"{args.prefix}.gfa")
-                generate_gfa(gfa_file, args.length, args.segments, args.variants, args.paths)
+                segments, variants, ref_path, _ = generate_gfa(gfa_file, args.length, args.segments, args.variants, args.paths)
+                
+                # Build reference sequence from GFA if not already created
+                if reference_seq is None and segments:
+                    reference_seq = ""
+                    for seg_id, orientation in ref_path:
+                        segment_seq = segments[seg_id]
+                        if orientation == '-':
+                            segment_seq = reverse_complement(segment_seq)
+                        reference_seq += segment_seq
             
+            # Generate GFF3
             if args.gff3:
                 gff_file = os.path.join(args.output_dir, f"{args.prefix}.gff3")
                 generate_gff3(gff_file, args.length, args.genes, args.exons)
             
+            # Generate VCF last, using the reference sequence
             if args.vcf:
                 vcf_file = os.path.join(args.output_dir, f"{args.prefix}.vcf")
-                generate_vcf(vcf_file, args.length, args.variants, None, args.samples, not args.unphased)
+                generate_vcf(vcf_file, args.length, args.variants, None, args.samples, 
+                            not args.unphased, reference_seq=reference_seq)
         
         logging.info("Test data generation completed successfully")
         return 0
@@ -549,5 +690,99 @@ def main():
             logging.error(traceback.format_exc())
         return 1
 
+def test_variant_reference_matching():
+    """Test function to verify variants match reference sequence."""
+    logging.info("Running variant reference matching test...")
+    
+    # Generate a reference sequence
+    seq_length = 5000
+    reference_seq = generate_random_sequence(seq_length)
+    
+    # Generate variants using this reference
+    num_variants = 20
+    variants = []
+    used_regions = []
+    
+    for i in range(1, num_variants + 1):
+        pos = random.randint(10, seq_length - 20)
+        
+        # Ensure no overlaps
+        valid_pos = True
+        for start, end in used_regions:
+            if pos >= start - 20 and pos <= end + 20:
+                valid_pos = False
+                break
+        
+        if not valid_pos:
+            continue
+            
+        var_type = random.choice(['SNP', 'INS', 'DEL'])
+        
+        if var_type == 'SNP':
+            ref_base = reference_seq[pos-1]
+            alt_bases = [b for b in 'ACGT' if b != ref_base]
+            alt_base = random.choice(alt_bases)
+            variants.append({
+                'id': f"var{i}",
+                'type': 'SNP',
+                'pos': pos,
+                'ref': ref_base,
+                'alt': alt_base
+            })
+        elif var_type == 'INS':
+            ref_base = reference_seq[pos-1]
+            ins_seq = generate_random_sequence(5)
+            variants.append({
+                'id': f"var{i}",
+                'type': 'INS',
+                'pos': pos,
+                'ref': ref_base,
+                'alt': ref_base + ins_seq
+            })
+        elif var_type == 'DEL':
+            del_length = min(5, seq_length - pos)
+            ref_seq = reference_seq[pos-1:pos+del_length]
+            alt_base = reference_seq[pos-1]
+            variants.append({
+                'id': f"var{i}",
+                'type': 'DEL',
+                'pos': pos,
+                'ref': ref_seq,
+                'alt': alt_base
+            })
+            
+        used_regions.append((pos, pos + (len(variants[-1]['ref']) - 1)))
+    
+    # Validate variants
+    is_valid, errors = validate_variants_against_reference(variants, reference_seq)
+    
+    if is_valid:
+        logging.info("✅ Test passed: All variants match reference sequence")
+    else:
+        logging.error("❌ Test failed: Variants do not match reference sequence")
+        for error in errors:
+            logging.error(f"  - {error}")
+    
+    # Test with deliberately mismatched variants
+    bad_variants = variants.copy()
+    if bad_variants:
+        # Modify a variant to create a mismatch
+        bad_variants[0]['ref'] = 'X' + bad_variants[0]['ref'][1:] if bad_variants[0]['ref'] else 'X'
+        
+        is_valid, errors = validate_variants_against_reference(bad_variants, reference_seq)
+        
+        if not is_valid:
+            logging.info("✅ Validation correctly detected mismatched variants")
+        else:
+            logging.error("❌ Validation failed to detect mismatched variants")
+    
+    return is_valid
+
 if __name__ == "__main__":
+    # Run tests if requested with --test flag
+    if len(sys.argv) > 1 and sys.argv[1] == '--test':
+        setup_logging(debug=True)
+        test_variant_reference_matching()
+        sys.exit(0)
+    
     sys.exit(main())
