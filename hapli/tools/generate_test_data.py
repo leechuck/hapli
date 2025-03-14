@@ -21,6 +21,8 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 import time
 from collections import defaultdict
+import cyvcf2
+import tempfile
 
 def setup_logging(debug=False, log_file=None, verbose=False):
     """Configure logging based on debug flag and optional log file."""
@@ -70,11 +72,11 @@ def generate_random_sequence(length, gc_content=0.5):
 
 def generate_gfa(output_file, seq_length=10000, num_segments=5, num_variants=10, 
                 num_paths=2, variant_types=None):
-    """Generate a synthetic GFA file with segments, paths, and variants."""
+    """Generate a synthetic GFA file with segments and reference path only."""
     if variant_types is None:
         variant_types = ['SNP', 'INS', 'DEL']
     
-    logging.info(f"Generating GFA file with {num_segments} segments and {num_variants} variants")
+    logging.info(f"Generating GFA file with {num_segments} segments")
     
     # Generate segments
     segments = {}
@@ -89,7 +91,7 @@ def generate_gfa(output_file, seq_length=10000, num_segments=5, num_variants=10,
     # Generate reference path
     ref_path = [(seg_id, '+') for seg_id in segments.keys()]
     
-    # Generate variants
+    # Generate variants for VCF (not used in GFA, but returned for VCF generation)
     variants = []
     for i in range(1, num_variants + 1):
         # Choose a random segment
@@ -140,42 +142,6 @@ def generate_gfa(output_file, seq_length=10000, num_segments=5, num_variants=10,
                     'alt': alt_base
                 })
     
-    # Create modified segments for variants
-    modified_segments = {}
-    for variant in variants:
-        seg_id = variant['segment']
-        if seg_id not in modified_segments:
-            modified_segments[seg_id] = segments[seg_id]
-        
-        # Apply variant to segment
-        segment_seq = modified_segments[seg_id]
-        pos = variant['position'] - 1  # Convert to 0-based
-        
-        if variant['type'] == 'SNP':
-            modified_segments[seg_id] = segment_seq[:pos] + variant['alt'] + segment_seq[pos+1:]
-        elif variant['type'] == 'INS':
-            modified_segments[seg_id] = segment_seq[:pos+1] + variant['alt'][1:] + segment_seq[pos+1:]
-        elif variant['type'] == 'DEL':
-            modified_segments[seg_id] = segment_seq[:pos] + variant['alt'] + segment_seq[pos+len(variant['ref']):]
-    
-    # Create alternate paths
-    alt_paths = []
-    for i in range(1, num_paths):
-        # Randomly select variants for this path
-        path_variants = random.sample(variants, min(len(variants), random.randint(1, len(variants))))
-        
-        # Create path segments
-        path_segments = []
-        for seg_id, orient in ref_path:
-            if any(v['segment'] == seg_id for v in path_variants):
-                # Use modified segment
-                path_segments.append((f"{seg_id}_alt{i}", orient))
-            else:
-                # Use original segment
-                path_segments.append((seg_id, orient))
-        
-        alt_paths.append((f"ALT{i}", path_segments))
-    
     # Write GFA file
     with open(output_file, 'w') as f:
         # Write header
@@ -185,33 +151,15 @@ def generate_gfa(output_file, seq_length=10000, num_segments=5, num_variants=10,
         for seg_id, seq in segments.items():
             f.write(f"S\t{seg_id}\t{seq}\tLN:i:{len(seq)}\n")
         
-        # Write modified segments
-        for i, alt_path in enumerate(alt_paths, 1):
-            for seg_id, orient in ref_path:
-                if any(alt_seg[0] == f"{seg_id}_alt{i}" for alt_seg in alt_path[1]):
-                    mod_seg_id = f"{seg_id}_alt{i}"
-                    f.write(f"S\t{mod_seg_id}\t{modified_segments[seg_id]}\tLN:i:{len(modified_segments[seg_id])}\n")
-        
         # Write links
         for i in range(len(ref_path) - 1):
             from_seg, from_orient = ref_path[i]
             to_seg, to_orient = ref_path[i + 1]
             f.write(f"L\t{from_seg}\t{from_orient}\t{to_seg}\t{to_orient}\t0M\n")
         
-        # Write links for alternate paths
-        for path_name, path_segments in alt_paths:
-            for i in range(len(path_segments) - 1):
-                from_seg, from_orient = path_segments[i]
-                to_seg, to_orient = path_segments[i + 1]
-                f.write(f"L\t{from_seg}\t{from_orient}\t{to_seg}\t{to_orient}\t0M\n")
-        
-        # Write paths
+        # Write reference path only
         ref_path_str = ','.join(f"{seg_id}{orient}" for seg_id, orient in ref_path)
         f.write(f"P\tREF\t{ref_path_str}\t*\n")
-        
-        for path_name, path_segments in alt_paths:
-            path_str = ','.join(f"{seg_id}{orient}" for seg_id, orient in path_segments)
-            f.write(f"P\t{path_name}\t{path_str}\t*\n")
     
     logging.info(f"Generated GFA file: {output_file}")
     logging.info(f"  Segments: {len(segments)}")
@@ -270,78 +218,102 @@ def generate_gff3(output_file, sequence_length=10000, num_genes=5, num_exons_per
     
     return num_genes, num_exons_per_gene
 
+def generate_hgvs_notation(variant):
+    """Generate HGVS notation for a variant."""
+    var_type = variant['type']
+    pos = variant['pos']
+    
+    if var_type == 'SNP':
+        # Format: g.100A>G
+        return f"g.{pos}{variant['ref']}>{variant['alt']}"
+    elif var_type == 'INS':
+        # Format: g.100_101insACGT
+        return f"g.{pos}_{pos+1}ins{variant['alt'][1:]}"
+    elif var_type == 'DEL':
+        # Format: g.100_105del
+        return f"g.{pos}_{pos+len(variant['ref'])-1}del"
+    return ""
+
 def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_types=None,
                 num_samples=2, phased=True):
-    """Generate a synthetic VCF file with variants."""
+    """Generate a synthetic VCF file with variants using cyvcf2."""
     if variant_types is None:
         variant_types = ['SNP', 'INS', 'DEL']
     
     logging.info(f"Generating VCF file with {num_variants} variants for {num_samples} samples")
     
-    with open(output_file, 'w') as f:
+    # Generate variants
+    variants = []
+    positions = set()
+    
+    for i in range(1, num_variants + 1):
+        # Choose a random position
+        while True:
+            pos = random.randint(10, sequence_length - 20)
+            # Ensure positions are at least 10bp apart
+            if all(abs(pos - p) >= 10 for p in positions):
+                positions.add(pos)
+                break
+        
+        # Choose a variant type
+        var_type = random.choice(variant_types)
+        
+        if var_type == 'SNP':
+            ref_base = random.choice('ACGT')
+            alt_bases = [b for b in 'ACGT' if b != ref_base]
+            alt_base = random.choice(alt_bases)
+            variants.append({
+                'id': f"var{i}",
+                'type': 'SNP',
+                'pos': pos,
+                'ref': ref_base,
+                'alt': alt_base
+            })
+        elif var_type == 'INS':
+            ref_base = random.choice('ACGT')
+            ins_length = random.randint(1, 10)
+            ins_seq = generate_random_sequence(ins_length)
+            variants.append({
+                'id': f"var{i}",
+                'type': 'INS',
+                'pos': pos,
+                'ref': ref_base,
+                'alt': ref_base + ins_seq
+            })
+        elif var_type == 'DEL':
+            del_length = random.randint(1, 10)
+            ref_seq = generate_random_sequence(del_length + 1)
+            alt_base = ref_seq[0]
+            variants.append({
+                'id': f"var{i}",
+                'type': 'DEL',
+                'pos': pos,
+                'ref': ref_seq,
+                'alt': alt_base
+            })
+    
+    # Sort variants by position
+    variants.sort(key=lambda v: v['pos'])
+    
+    # Add HGVS notation to each variant
+    for variant in variants:
+        variant['hgvs'] = generate_hgvs_notation(variant)
+    
+    # Create a temporary VCF file with cyvcf2
+    with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
+        temp_filename = temp_file.name
+        
         # Write VCF header
-        f.write("##fileformat=VCFv4.2\n")
-        f.write("##source=hapli_test_data_generator\n")
-        f.write("##reference=synthetic\n")
-        f.write('##INFO=<ID=TYPE,Number=1,Type=String,Description="Type of variant">\n')
-        f.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
+        temp_file.write("##fileformat=VCFv4.2\n")
+        temp_file.write("##source=hapli_test_data_generator\n")
+        temp_file.write("##reference=synthetic\n")
+        temp_file.write('##INFO=<ID=TYPE,Number=1,Type=String,Description="Type of variant">\n')
+        temp_file.write('##INFO=<ID=HGVS,Number=1,Type=String,Description="HGVS notation">\n')
+        temp_file.write('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
         
         # Write column headers
         sample_names = [f"SAMPLE{i}" for i in range(1, num_samples + 1)]
-        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(sample_names) + "\n")
-        
-        # Generate variants
-        variants = []
-        positions = set()
-        
-        for i in range(1, num_variants + 1):
-            # Choose a random position
-            while True:
-                pos = random.randint(10, sequence_length - 20)
-                # Ensure positions are at least 10bp apart
-                if all(abs(pos - p) >= 10 for p in positions):
-                    positions.add(pos)
-                    break
-            
-            # Choose a variant type
-            var_type = random.choice(variant_types)
-            
-            if var_type == 'SNP':
-                ref_base = random.choice('ACGT')
-                alt_bases = [b for b in 'ACGT' if b != ref_base]
-                alt_base = random.choice(alt_bases)
-                variants.append({
-                    'id': f"var{i}",
-                    'type': 'SNP',
-                    'pos': pos,
-                    'ref': ref_base,
-                    'alt': alt_base
-                })
-            elif var_type == 'INS':
-                ref_base = random.choice('ACGT')
-                ins_length = random.randint(1, 10)
-                ins_seq = generate_random_sequence(ins_length)
-                variants.append({
-                    'id': f"var{i}",
-                    'type': 'INS',
-                    'pos': pos,
-                    'ref': ref_base,
-                    'alt': ref_base + ins_seq
-                })
-            elif var_type == 'DEL':
-                del_length = random.randint(1, 10)
-                ref_seq = generate_random_sequence(del_length + 1)
-                alt_base = ref_seq[0]
-                variants.append({
-                    'id': f"var{i}",
-                    'type': 'DEL',
-                    'pos': pos,
-                    'ref': ref_seq,
-                    'alt': alt_base
-                })
-        
-        # Sort variants by position
-        variants.sort(key=lambda v: v['pos'])
+        temp_file.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(sample_names) + "\n")
         
         # Write variants
         for variant in variants:
@@ -359,9 +331,24 @@ def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_ty
                 genotypes.append(gt)
             
             # Write VCF line
-            f.write(f"1\t{variant['pos']}\t{variant['id']}\t{variant['ref']}\t{variant['alt']}\t.\tPASS\t")
-            genotypes_str = "\t".join(genotypes)
-            f.write(f"TYPE={variant['type']}\tGT\t{genotypes_str}\n")
+            temp_file.write(f"1\t{variant['pos']}\t{variant['id']}\t{variant['ref']}\t{variant['alt']}\t.\tPASS\t")
+            temp_file.write(f"TYPE={variant['type']};HGVS={variant['hgvs']}\tGT\t{'\t'.join(genotypes)}\n")
+    
+    try:
+        # Use cyvcf2 to read and write the VCF file to ensure it's compliant
+        vcf_reader = cyvcf2.VCF(temp_filename)
+        vcf_writer = cyvcf2.Writer(output_file, vcf_reader)
+        
+        for variant in vcf_reader:
+            vcf_writer.write_record(variant)
+        
+        vcf_writer.close()
+        vcf_reader.close()
+        
+    finally:
+        # Clean up the temporary file
+        if os.path.exists(temp_filename):
+            os.unlink(temp_filename)
     
     logging.info(f"Generated VCF file: {output_file}")
     logging.info(f"  Variants: {len(variants)}")
@@ -435,6 +422,13 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'generate-test-data':
         # Remove the subcommand from sys.argv
         sys.argv.pop(1)
+    
+    # Check if cyvcf2 is available
+    try:
+        import cyvcf2
+    except ImportError:
+        logging.error("cyvcf2 is required for VCF generation. Please install it with: pip install cyvcf2")
+        return 1
     
     parser = argparse.ArgumentParser(description='Generate test data for hapli.')
     parser.add_argument('--output-dir', default='testdata', help='Output directory for test files')
