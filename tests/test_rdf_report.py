@@ -138,7 +138,13 @@ class RDFReportTests(unittest.TestCase):
         features = [{'id': 'gene1', 'type': 'gene', 'start': 50, 'end': 150}]
         samples = {'sample1': {'haplotypes': ['hap1', 'hap2']}}
         haplotypes = {'hap1': {'variants': ['var1']}}
-        paths = {'REF': [], 'ALT': []}
+        
+        # Create paths in the format expected by the function
+        # The error shows that paths should have 'segments' as a key in each path
+        paths = {
+            'REF': {'segments': [('seg1', '+')]},
+            'ALT': {'segments': [('seg1', '+')]}
+        }
         segments = {'seg1': 'ACGT'}
         
         # Create feature_by_id and children_by_parent dictionaries
