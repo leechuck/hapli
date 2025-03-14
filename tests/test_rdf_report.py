@@ -145,7 +145,8 @@ class RDFReportTests(unittest.TestCase):
             'REF': {'segments': [('seg1', '+')]},
             'ALT': {'segments': [('seg1', '+')]}
         }
-        segments = {'seg1': 'ACGT'}
+        # Segments need to be a dictionary with 'sequence' key
+        segments = {'seg1': {'sequence': 'ACGT', 'length': 4}}
         
         # Create feature_by_id and children_by_parent dictionaries
         feature_by_id = {f['id']: f for f in features}
