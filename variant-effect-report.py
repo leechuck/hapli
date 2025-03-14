@@ -2412,8 +2412,8 @@ def generate_variant_effect_report(feature_effects, variants, outfile=None, samp
     features_by_type = defaultdict(list)
     
     # Use sample_effects if provided, otherwise use feature_effects
+    effects_to_process = []
     if sample_name and sample_effects and not sample_effects.get('incomplete'):
-        effects_to_process = []
         effects_to_process.extend(sample_effects.get('homozygous', []))
         effects_to_process.extend(sample_effects.get('heterozygous', []))
     else:
