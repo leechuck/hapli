@@ -408,6 +408,23 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                     logging.warning(f"Line {line_num}: Invalid END position: {info_dict.get('END')}")
                     end_pos = pos + len(ref) - 1
                 
+                # Handle HGVS notation if present
+                hgvs_notation = info_dict.get('HGVS', '')
+                hgvs_obj = None
+                
+                # Parse HGVS notation if available and parser is initialized
+                if hgvs_notation and hgvs_parser and HGVS_AVAILABLE:
+                    try:
+                        hgvs_obj = hgvs_parser.parse_hgvs_variant(hgvs_notation)
+                        logging.debug(f"Parsed HGVS: {hgvs_notation} -> {hgvs_obj}")
+                    except Exception as e:
+                        error_msg = f"Could not parse HGVS notation for {current_id}: {e}"
+                        if strict_hgvs:
+                            logging.error(error_msg)
+                            raise ValueError(error_msg)
+                        else:
+                            logging.warning(error_msg)
+                
                 # Process genotype data for this allele
                 genotypes = []
                 if sample_data:
