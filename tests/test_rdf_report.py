@@ -127,14 +127,14 @@ class RDFReportTests(unittest.TestCase):
         self.assertIn('Variant', schema)
         self.assertIn('Feature', schema)
         
-    @patch('hapli.reporting.rdf_report.rdflib')
     @patch('hapli.reporting.rdf_report.build_path_sequence')
     @patch('hapli.reporting.rdf_report.analyze_haplotype_differences')
-    def test_consolidated_rdf_report(self, mock_analyze_differences, mock_build_path, mock_rdflib):
+    @patch('hapli.reporting.rdf_report.Graph')
+    def test_consolidated_rdf_report(self, mock_graph_class, mock_analyze_differences, mock_build_path):
         """Test creating a consolidated RDF report."""
         # Setup mock graph
         mock_graph = MagicMock()
-        mock_rdflib.Graph.return_value = mock_graph
+        mock_graph_class.return_value = mock_graph
         mock_graph.__len__.return_value = 20  # Simulate some triples in the graph
         
         # Setup mock build_path_sequence to return a sequence and segment_offsets dictionary
@@ -191,7 +191,7 @@ class RDFReportTests(unittest.TestCase):
         self.assertIs(graph, mock_graph)
         
         # Verify that the appropriate methods were called
-        mock_rdflib.Graph.assert_called_once()
+        mock_graph_class.assert_called_once()
         mock_build_path.assert_called()  # Verify build_path_sequence was called
 
 if __name__ == '__main__':
