@@ -1,0 +1,10 @@
+# Core dependencies
+biopython>=1.79
+numpy>=1.20.0
+
+# Optional dependencies
+rdflib>=6.0.0
+
+# Development dependencies
+pytest>=7.0.0
+pytest-cov>=2.12.0

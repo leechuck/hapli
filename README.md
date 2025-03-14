@@ -4,9 +4,49 @@ hapli provides functional annotations to haplotypes and genotypes using GFA file
 
 ## Installation
 
+### Quick Install
+
 ```bash
-pip install .
+pip install hapli
 ```
+
+### Development Install
+
+Clone the repository and install in development mode:
+
+```bash
+git clone https://github.com/yourusername/hapli.git
+cd hapli
+pip install -e .
+```
+
+### Install with Optional Dependencies
+
+```bash
+# Install with RDF support
+pip install -e .[rdf]
+
+# Install with development dependencies
+pip install -e .[dev]
+
+# Install all dependencies
+pip install -e .[rdf,dev]
+```
+
+### From Requirements File
+
+Install dependencies using the requirements file:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Requirements
+
+- Python 3.8 or higher
+- BioPython (for sequence analysis)
+- NumPy (for numerical operations)
+- RDFLib (optional, for RDF output)
 
 ## Usage
 
