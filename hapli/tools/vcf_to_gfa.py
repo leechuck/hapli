@@ -853,11 +853,15 @@ def apply_single_variant(segments, variant, segment_offsets, path_segments, allo
         # Try fuzzy matching
         alignment_score = 0
         if len(expected_ref) > 0 and len(variant['ref']) > 0:
-            alignments = pairwise2.align.localms(
-                expected_ref, variant['ref'], 
-                2, -1, -2, -0.5,
-                one_alignment_only=True
-            )
+            # Use BioPython's Align module for sequence alignment to find best match
+            aligner = Align.PairwiseAligner()
+            aligner.mode = 'local'
+            aligner.match_score = 2
+            aligner.mismatch_score = -1
+            aligner.open_gap_score = -2
+            aligner.extend_gap_score = -0.5
+            
+            alignments = aligner.align(expected_ref, variant['ref'])
             if alignments:
                 alignment_score = alignments[0].score / (2 * max(len(expected_ref), len(variant['ref'])))
         
