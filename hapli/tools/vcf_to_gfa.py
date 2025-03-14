@@ -253,7 +253,7 @@ def reverse_complement(sequence):
     return str(seq_obj.reverse_complement())
 
 def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None):
-    """Parse VCF file and extract variants.
+    """Parse VCF file and extract variants using cyvcf2.
     
     Args:
         vcf_file (str): Path to the VCF file
@@ -271,7 +271,12 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
     samples = []
     format_fields = []
     
-    # Initialize HGVS parser if available and needed
+    # Check if cyvcf2 is available
+    if not CYVCF2_AVAILABLE:
+        logging.error("cyvcf2 is required for VCF parsing. Please install with: pip install cyvcf2")
+        raise ImportError("cyvcf2 is required for VCF parsing")
+    
+    # Initialize HGVS parser if available
     hgvs_parser = None
     if HGVS_AVAILABLE:
         try:
@@ -296,106 +301,66 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
         'multiallelic': 0
     }
     
-    with open(vcf_file, 'r') as f:
-        for line_num, line in enumerate(f, 1):
-            # Process header
-            if line.startswith('#'):
-                # Extract column headers to identify samples
-                if line.startswith('#CHROM'):
-                    header_fields = line.strip().split('\t')
-                    if len(header_fields) > 9:  # VCF has samples
-                        samples = header_fields[9:]
-                        logging.info(f"Found {len(samples)} samples in VCF: {', '.join(samples)}")
-                continue
-                
+    try:
+        # Open VCF file with cyvcf2
+        vcf = cyvcf2.VCF(vcf_file)
+        
+        # Get samples
+        samples = vcf.samples
+        if samples:
+            logging.info(f"Found {len(samples)} samples in VCF: {', '.join(samples)}")
+        
+        # Get format fields
+        format_fields = vcf.FORMAT
+        
+        # Process variants
+        for variant in vcf:
             vcf_stats['total'] += 1
             
             # Stop if we've reached max variants
             if max_variants and vcf_stats['passed'] >= max_variants:
                 logging.info(f"Reached maximum of {max_variants} variants, stopping")
                 break
-                
-            fields = line.strip().split('\t')
-            if len(fields) < 8:
-                logging.warning(f"Line {line_num}: Invalid VCF record, missing fields")
-                vcf_stats['invalid'] += 1
-                continue
-                
-            chrom = fields[0]
+            
+            chrom = variant.CHROM
             
             # Apply chromosome filter if provided
             if chrom_filter and chrom != chrom_filter:
                 vcf_stats['filtered'] += 1
                 continue
-                
-            try:
-                pos = int(fields[1])
-            except ValueError:
-                logging.warning(f"Line {line_num}: Invalid position: {fields[1]}")
-                vcf_stats['invalid'] += 1
-                continue
-                
-            var_id = fields[2] if fields[2] != '.' else f"var_{line_num}"
-            ref = fields[3]
-            alt = fields[4]
             
-            if not ref or not alt or alt == '.':
-                logging.warning(f"Line {line_num}: Missing or invalid REF or ALT")
+            pos = variant.POS
+            var_id = variant.ID if variant.ID else f"var_{vcf_stats['total']}"
+            ref = variant.REF
+            alts = variant.ALT  # List of alternate alleles
+            
+            # Check for valid REF/ALT
+            if not ref or not alts or (len(alts) == 1 and alts[0] == '.'):
+                logging.warning(f"Variant {var_id}: Missing or invalid REF or ALT")
                 vcf_stats['invalid'] += 1
                 continue
             
             # Handle multiple ALT alleles
-            alt_alleles = alt.split(',')
-            if len(alt_alleles) > 1:
-                logging.debug(f"Line {line_num}: Processing {len(alt_alleles)} alternate alleles")
+            if len(alts) > 1:
+                logging.debug(f"Variant {var_id}: Processing {len(alts)} alternate alleles")
                 vcf_stats['multiallelic'] += 1
             
-            # Parse INFO field
+            # Get INFO fields
             info_dict = {}
-            for item in fields[7].split(';'):
-                if '=' in item:
-                    key, value = item.split('=', 1)
-                    info_dict[key] = value
-                else:
-                    info_dict[item] = True
+            for field in variant.INFO:
+                if field:
+                    info_dict[field] = variant.INFO.get(field)
             
-            # Process FORMAT field if present (for genotype data)
-            format_data = {}
-            sample_data = []
-            is_phased = False
-            
-            if len(fields) > 8 and samples:
-                format_keys = fields[8].split(':')
-                if not format_fields:  # Store format fields once
-                    format_fields = format_keys
-                
-                # Process each sample's genotype
-                for i, sample_name in enumerate(samples):
-                    if len(fields) <= 9 + i:
-                        continue
-                        
-                    sample_values = fields[9 + i].split(':')
-                    sample_dict = {}
-                    
-                    # Map FORMAT fields to values
-                    for j, key in enumerate(format_keys):
-                        if j < len(sample_values):
-                            sample_dict[key] = sample_values[j]
-                    
-                    # Check for phasing in genotype (GT) field
-                    if 'GT' in sample_dict:
-                        gt = sample_dict['GT']
-                        if '|' in gt:  # Phased genotype
-                            is_phased = True
-                            vcf_stats['phased'] += 1
-                        elif '/' in gt:  # Unphased genotype
-                            vcf_stats['unphased'] += 1
-                    
-                    sample_data.append(sample_dict)
+            # Check if any genotypes are phased
+            is_phased = any(variant.gt_phases)
+            if is_phased:
+                vcf_stats['phased'] += 1
+            else:
+                vcf_stats['unphased'] += 1
             
             # Process each ALT allele
-            for idx, alt_allele in enumerate(alt_alleles):
-                current_id = var_id if len(alt_alleles) == 1 else f"{var_id}_{idx+1}"
+            for idx, alt_allele in enumerate(alts):
+                current_id = var_id if len(alts) == 1 else f"{var_id}_{idx+1}"
                 
                 # Determine variant type based on length and SVTYPE field
                 if 'SVTYPE' in info_dict:
@@ -412,23 +377,26 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                     else:
                         variant_type = 'OTHER'
                 
-                try:
-                    end_pos = int(info_dict.get('END', pos + len(ref) - 1))
-                except ValueError:
-                    logging.warning(f"Line {line_num}: Invalid END position: {info_dict.get('END')}")
-                    end_pos = pos + len(ref) - 1
+                # Get END position
+                end_pos = variant.INFO.get('END', pos + len(ref) - 1)
                 
                 # Handle HGVS notation if present
-                hgvs_notation = info_dict.get('HGVS', '')
+                hgvs_notation = variant.INFO.get('HGVS', '')
                 hgvs_obj = None
                 
                 # Parse HGVS notation if available and parser is initialized
                 if hgvs_notation and hgvs_parser and HGVS_AVAILABLE:
                     try:
-                        hgvs_obj = hgvs_parser.parse_hgvs_variant(hgvs_notation)
+                        # Add proper prefix for HGVS parsing if needed
+                        if not hgvs_notation.startswith('chr'):
+                            prefixed_hgvs = f"chr{chrom}:{hgvs_notation}"
+                        else:
+                            prefixed_hgvs = hgvs_notation
+                            
+                        hgvs_obj = hgvs_parser.parse_hgvs_variant(prefixed_hgvs)
                         logging.debug(f"Parsed HGVS: {hgvs_notation} -> {hgvs_obj}")
-                    except Exception as e:
-                        error_msg = f"Could not parse HGVS notation for {current_id}: {e}"
+                    except hgvs.exceptions.HGVSParseError as e:
+                        error_msg = f"Could not parse HGVS notation for {current_id}: {hgvs_notation}: {e}"
                         if strict_hgvs:
                             logging.error(error_msg)
                             raise ValueError(error_msg)
@@ -437,37 +405,79 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                 
                 # Process genotype data for this allele
                 genotypes = []
-                if sample_data:
-                    for i, sample in enumerate(sample_data):
-                        if 'GT' in sample:
-                            gt = sample['GT']
-                            
-                            # Parse allele indices from GT field
-                            if '|' in gt:  # Phased
-                                allele_indices = [int(a) if a.isdigit() else None for a in gt.split('|')]
-                                phase_type = 'phased'
-                            elif '/' in gt:  # Unphased
-                                allele_indices = [int(a) if a.isdigit() else None for a in gt.split('/')]
-                                phase_type = 'unphased'
+                for i, sample_name in enumerate(samples):
+                    # Get genotype for this sample
+                    gt_type = variant.gt_types[i]  # 0=HOM_REF, 1=HET, 2=HOM_ALT, 3=UNKNOWN
+                    gt_bases = variant.gt_bases[i]  # e.g., "A/C"
+                    
+                    # Parse allele indices
+                    if '|' in gt_bases:  # Phased
+                        phase_type = 'phased'
+                        allele_indices = []
+                        for allele in gt_bases.split('|'):
+                            if allele == ref:
+                                allele_indices.append(0)
+                            elif allele == alt_allele:
+                                allele_indices.append(idx + 1)
                             else:
-                                allele_indices = [int(gt) if gt.isdigit() else None]
-                                phase_type = 'unknown'
-                            
-                            # Check if this specific ALT allele is present in genotype
-                            # ALT index is idx+1 (because 0 is REF)
-                            alt_idx = idx + 1
-                            has_alt = alt_idx in allele_indices
-                            
-                            genotypes.append({
-                                'sample': samples[i],
-                                'gt': gt,
-                                'has_alt': has_alt,
-                                'allele_indices': allele_indices,
-                                'phase_type': phase_type,
-                                'format_data': sample
-                            })
+                                # Check if it's another alt allele
+                                try:
+                                    alt_idx = alts.index(allele) + 1
+                                    allele_indices.append(alt_idx)
+                                except ValueError:
+                                    allele_indices.append(None)
+                    elif '/' in gt_bases:  # Unphased
+                        phase_type = 'unphased'
+                        allele_indices = []
+                        for allele in gt_bases.split('/'):
+                            if allele == ref:
+                                allele_indices.append(0)
+                            elif allele == alt_allele:
+                                allele_indices.append(idx + 1)
+                            else:
+                                # Check if it's another alt allele
+                                try:
+                                    alt_idx = alts.index(allele) + 1
+                                    allele_indices.append(alt_idx)
+                                except ValueError:
+                                    allele_indices.append(None)
+                    else:
+                        # Single allele (haploid)
+                        phase_type = 'unknown'
+                        if gt_bases == ref:
+                            allele_indices = [0]
+                        elif gt_bases == alt_allele:
+                            allele_indices = [idx + 1]
+                        else:
+                            # Check if it's another alt allele
+                            try:
+                                alt_idx = alts.index(gt_bases) + 1
+                                allele_indices = [alt_idx]
+                            except ValueError:
+                                allele_indices = [None]
+                    
+                    # Check if this specific ALT allele is present in genotype
+                    has_alt = (idx + 1) in allele_indices
+                    
+                    # Get FORMAT fields for this sample
+                    format_data = {}
+                    for field in format_fields:
+                        try:
+                            format_data[field] = variant.format(field)[i]
+                        except:
+                            pass
+                    
+                    genotypes.append({
+                        'sample': sample_name,
+                        'gt': '|'.join(map(str, allele_indices)) if phase_type == 'phased' else '/'.join(map(str, allele_indices)),
+                        'has_alt': has_alt,
+                        'allele_indices': allele_indices,
+                        'phase_type': phase_type,
+                        'format_data': format_data
+                    })
                 
-                variant = {
+                # Create variant dictionary
+                variant_dict = {
                     'id': current_id,
                     'chrom': chrom,
                     'pos': pos,
@@ -479,18 +489,23 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                     'is_phased': is_phased,
                     'allele_index': idx + 1,
                     'info': info_dict,
-                    'line_num': line_num
+                    'line_num': vcf_stats['total']
                 }
                 
-                variants.append(variant)
+                variants.append(variant_dict)
                 vcf_stats['passed'] += 1
                 vcf_stats['by_type'][variant_type] += 1
                 vcf_stats['by_chrom'][chrom] += 1
                 
                 logging.debug(f"Parsed variant: {current_id} {variant_type} at position {pos}")
-    
-    # Sort variants by position (ascending)
-    variants = sorted(variants, key=lambda v: v['pos'])
+        
+        # Sort variants by position (ascending)
+        variants = sorted(variants, key=lambda v: v['pos'])
+        
+    except Exception as e:
+        logging.error(f"Error parsing VCF file: {e}")
+        if strict_hgvs:
+            raise
     
     elapsed = time.time() - start_time
     logging.info(f"Finished parsing VCF in {elapsed:.2f}s: {len(variants)} variants")
