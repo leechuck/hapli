@@ -332,7 +332,8 @@ def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_ty
             
             # Write VCF line
             temp_file.write(f"1\t{variant['pos']}\t{variant['id']}\t{variant['ref']}\t{variant['alt']}\t.\tPASS\t")
-            temp_file.write(f"TYPE={variant['type']};HGVS={variant['hgvs']}\tGT\t{'\t'.join(genotypes)}\n")
+            genotypes_str = "\t".join(genotypes)
+            temp_file.write(f"TYPE={variant['type']};HGVS={variant['hgvs']}\tGT\t{genotypes_str}\n")
     
     try:
         # Use cyvcf2 to read and write the VCF file to ensure it's compliant
