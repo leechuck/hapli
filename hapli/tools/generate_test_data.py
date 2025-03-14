@@ -164,9 +164,9 @@ def generate_gfa(output_file, seq_length=10000, num_segments=5, num_variants=10,
     logging.info(f"Generated GFA file: {output_file}")
     logging.info(f"  Segments: {len(segments)}")
     logging.info(f"  Variants: {len(variants)}")
-    logging.info(f"  Paths: {1 + len(alt_paths)}")
+    logging.info(f"  Paths: 1")  # Only reference path
     
-    return segments, variants, ref_path, alt_paths
+    return segments, variants, ref_path, []  # Empty list for alt_paths
 
 def generate_gff3(output_file, sequence_length=10000, num_genes=5, num_exons_per_gene=3):
     """Generate a synthetic GFF3 file with gene features."""
