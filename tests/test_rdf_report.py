@@ -144,7 +144,8 @@ class RDFReportTests(unittest.TestCase):
         features = [{'id': 'gene1', 'type': 'gene', 'start': 50, 'end': 150, 'strand': '+', 'attributes': {'ID': 'gene1', 'Name': 'test_gene'}}]
         
         # Create sample data with proper structure
-        samples = {'sample1': {'haplotypes': ['hap1', 'hap2']}}
+        # Add paths to the sample to avoid KeyError: 0 in create_consolidated_rdf_report
+        samples = {'sample1': {'haplotypes': ['hap1', 'hap2'], 'paths': ['ALT']}}
         haplotypes = {'hap1': {'variants': ['var1']}}
         
         # Create paths in the format expected by the function

@@ -353,7 +353,7 @@ def create_consolidated_rdf_report(variants, features, samples, haplotypes, path
         processed_features[feature_id] = feature_uri
     
     # Process each sample
-    for sample_name, sample_paths in samples.items():
+    for sample_name, sample_data in samples.items():
         logging.info(f"Adding sample {sample_name} to consolidated report")
         
         # Create sample node
@@ -608,7 +608,11 @@ def create_consolidated_rdf_report(variants, features, samples, haplotypes, path
                                 
         else:
             # Process single haplotype
-            path_name = sample_paths[0]
+            if not sample_data.get('paths') or not sample_data['paths']:
+                logging.warning(f"No paths found for sample {sample_name}, skipping")
+                continue
+                
+            path_name = sample_data['paths'][0]
             path_segments = paths[path_name]['segments']
             
             # Build path sequence
