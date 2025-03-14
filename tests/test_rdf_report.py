@@ -29,14 +29,12 @@ class RDFReportTests(unittest.TestCase):
         """Clean up after tests."""
         self.temp_dir.cleanup()
     
-    @patch('hapli.reporting.rdf_report.rdflib')
-    def test_create_rdf_variant_report(self, mock_rdflib):
+    def test_create_rdf_variant_report(self):
         """Test creating an RDF variant report."""
-        # Setup mock graph
-        mock_graph = MagicMock()
-        mock_rdflib.Graph.return_value = mock_graph
-        mock_graph.__len__.return_value = 10  # Simulate some triples in the graph
-        
+        # Skip if RDFLib is not available
+        if not RDFLIB_AVAILABLE:
+            self.skipTest("RDFLib not available")
+            
         # Define test data
         variants = [
             {
@@ -81,10 +79,7 @@ class RDFReportTests(unittest.TestCase):
         
         # Check that the graph was created
         self.assertIsNotNone(graph)
-        self.assertEqual(len(graph), 10)
-        
-        # Verify that the appropriate methods were called
-        mock_rdflib.Graph.assert_called_once()
+        self.assertGreater(len(graph), 0)  # Just check that there are triples, don't check exact count
     
     @patch('hapli.reporting.rdf_report.rdflib')
     def test_output_rdf_report(self, mock_rdflib):
@@ -132,14 +127,12 @@ class RDFReportTests(unittest.TestCase):
         self.assertIn('Variant', schema)
         self.assertIn('Feature', schema)
         
-    @patch('hapli.reporting.rdf_report.rdflib')
-    def test_consolidated_rdf_report(self, mock_rdflib):
+    def test_consolidated_rdf_report(self):
         """Test creating a consolidated RDF report."""
-        # Setup mock graph
-        mock_graph = MagicMock()
-        mock_rdflib.Graph.return_value = mock_graph
-        mock_graph.__len__.return_value = 15  # Simulate some triples in the graph
-        
+        # Skip if RDFLib is not available
+        if not RDFLIB_AVAILABLE:
+            self.skipTest("RDFLib not available")
+            
         # Test data
         variants = [{'id': 'var1', 'type': 'SNP', 'pos': 100, 'ref': 'A', 'alt': 'G'}]
         features = [{'id': 'gene1', 'type': 'gene', 'start': 50, 'end': 150}]
@@ -148,17 +141,25 @@ class RDFReportTests(unittest.TestCase):
         paths = {'REF': [], 'ALT': []}
         segments = {'seg1': 'ACGT'}
         
+        # Create feature_by_id and children_by_parent dictionaries
+        feature_by_id = {f['id']: f for f in features}
+        children_by_parent = {}
+        for f in features:
+            if 'attributes' in f and 'Parent' in f['attributes']:
+                parent_id = f['attributes']['Parent']
+                if parent_id not in children_by_parent:
+                    children_by_parent[parent_id] = []
+                children_by_parent[parent_id].append(f['id'])
+        
         # Create consolidated report
         graph = rdf_report.create_consolidated_rdf_report(
-            variants, features, samples, haplotypes, paths, segments
+            variants, features, samples, haplotypes, paths, segments,
+            feature_by_id, children_by_parent
         )
         
         # Check that the graph was created
         self.assertIsNotNone(graph)
-        self.assertEqual(len(graph), 15)
-        
-        # Verify that the appropriate methods were called
-        mock_rdflib.Graph.assert_called_once()
+        self.assertGreater(len(graph), 0)  # Just check that there are triples, don't check exact count
 
 if __name__ == '__main__':
     unittest.main()
