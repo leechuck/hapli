@@ -136,7 +136,7 @@ class RDFReportTests(unittest.TestCase):
         # Test data
         variants = [{'id': 'var1', 'type': 'SNP', 'pos': 100, 'ref': 'A', 'alt': 'G'}]
         features = [{'id': 'gene1', 'type': 'gene', 'start': 50, 'end': 150, 'strand': '+', 'attributes': {'ID': 'gene1', 'Name': 'test_gene'}}]
-        samples = {'sample1': {'haplotypes': ['hap1', 'hap2']}}
+        samples = {'sample1': {'haplotypes': ['hap1', 'hap2'], 'paths': ['ALT']}}
         haplotypes = {'hap1': {'variants': ['var1']}}
         
         # Create paths in the format expected by the function
