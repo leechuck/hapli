@@ -30,14 +30,6 @@ try:
 except ImportError:
     HGVS_AVAILABLE = False
 
-# Optional import for HGVS support
-try:
-    import hgvs.parser
-    import hgvs.validator
-    HGVS_AVAILABLE = True
-except ImportError:
-    HGVS_AVAILABLE = False
-
 def setup_logging(debug=False, log_file=None, verbose=False):
     """Configure logging based on debug flag and optional log file."""
     if debug:
@@ -269,15 +261,6 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
     samples = []
     format_fields = []
     
-    # Initialize HGVS parser if available and needed
-    hgvs_parser = None
-    if HGVS_AVAILABLE:
-        try:
-            hgvs_parser = hgvs.parser.Parser()
-            logging.debug("HGVS parser initialized successfully")
-        except Exception as e:
-            logging.warning(f"Failed to initialize HGVS parser: {e}")
-            hgvs_parser = None
     # Initialize HGVS parser if available and needed
     hgvs_parser = None
     if HGVS_AVAILABLE:
