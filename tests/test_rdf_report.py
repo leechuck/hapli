@@ -127,25 +127,21 @@ class RDFReportTests(unittest.TestCase):
         self.assertIn('Variant', schema)
         self.assertIn('Feature', schema)
         
-    @patch('hapli.reporting.rdf_report.rdflib')
-    def test_consolidated_rdf_report(self, mock_rdflib):
+    def test_consolidated_rdf_report(self):
         """Test creating a consolidated RDF report."""
-        # Setup mock graph
-        mock_graph = MagicMock()
-        mock_rdflib.Graph.return_value = mock_graph
-        mock_graph.__len__.return_value = 20  # Simulate some triples in the graph
+        # Skip if RDFLib is not available
+        if not RDFLIB_AVAILABLE:
+            self.skipTest("RDFLib not available")
             
         # Test data
         variants = [{'id': 'var1', 'type': 'SNP', 'pos': 100, 'ref': 'A', 'alt': 'G'}]
         features = [{'id': 'gene1', 'type': 'gene', 'start': 50, 'end': 150, 'strand': '+', 'attributes': {'ID': 'gene1', 'Name': 'test_gene'}}]
         
         # Create sample data with proper structure
-        sample_paths = ['ALT']
-        samples = {'sample1': {'haplotypes': ['hap1', 'hap2'], 'paths': sample_paths}}
+        samples = {'sample1': {'haplotypes': ['hap1', 'hap2'], 'paths': ['ALT']}}
         haplotypes = {'hap1': {'variants': ['var1']}}
         
         # Create paths in the format expected by the function
-        # The error shows that paths should have 'segments' as a key in each path
         paths = {
             'REF': {'segments': [('seg1', '+')]},
             'ALT': {'segments': [('seg1', '+')]}
