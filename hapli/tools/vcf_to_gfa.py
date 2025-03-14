@@ -303,7 +303,22 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
     
     try:
         # Open VCF file with cyvcf2
-        vcf = cyvcf2.VCF(vcf_file)
+        try:
+            vcf = cyvcf2.VCF(vcf_file)
+        except Exception as e:
+            logging.error(f"Failed to open VCF file with cyvcf2: {e}")
+            logging.info("Trying to index the VCF file with tabix...")
+            
+            # Try to index the file with tabix
+            import subprocess
+            try:
+                subprocess.run(['bgzip', '-c', vcf_file], stdout=open(f"{vcf_file}.gz", 'wb'))
+                subprocess.run(['tabix', '-p', 'vcf', f"{vcf_file}.gz"])
+                vcf = cyvcf2.VCF(f"{vcf_file}.gz")
+                logging.info("Successfully indexed and opened VCF file")
+            except Exception as index_error:
+                logging.error(f"Failed to index VCF file: {index_error}")
+                raise
         
         # Get samples
         samples = vcf.samples
@@ -351,9 +366,16 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
             
             # Get INFO fields
             info_dict = {}
-            for field in variant.INFO:
-                if field:
-                    info_dict[field] = variant.INFO.get(field)
+            try:
+                for field in variant.INFO:
+                    if field:
+                        value = variant.INFO.get(field)
+                        # Convert numpy arrays or other non-string types to Python native types
+                        if hasattr(value, 'tolist'):
+                            value = value.tolist()
+                        info_dict[field] = value
+            except Exception as e:
+                logging.debug(f"Error processing INFO fields: {e}")
             
             # Check if any genotypes are phased
             is_phased = any(variant.gt_phases)
@@ -385,21 +407,28 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                 end_pos = variant.INFO.get('END', pos + len(ref) - 1)
                 
                 # Handle HGVS notation if present
-                hgvs_notation = variant.INFO.get('HGVS', '')
+                hgvs_notation = ''
+                try:
+                    hgvs_notation = info_dict.get('HGVS', '')
+                    if hasattr(hgvs_notation, 'decode'):
+                        hgvs_notation = hgvs_notation.decode('utf-8')
+                except Exception as e:
+                    logging.debug(f"Error getting HGVS notation: {e}")
+                
                 hgvs_obj = None
                 
                 # Parse HGVS notation if available and parser is initialized
                 if hgvs_notation and hgvs_parser and HGVS_AVAILABLE:
                     try:
                         # Add proper prefix for HGVS parsing if needed
-                        if not hgvs_notation.startswith('chr'):
+                        if not str(hgvs_notation).startswith('chr'):
                             prefixed_hgvs = f"chr{chrom}:{hgvs_notation}"
                         else:
                             prefixed_hgvs = hgvs_notation
                             
-                        hgvs_obj = hgvs_parser.parse_hgvs_variant(prefixed_hgvs)
+                        hgvs_obj = hgvs_parser.parse_hgvs_variant(str(prefixed_hgvs))
                         logging.debug(f"Parsed HGVS: {hgvs_notation} -> {hgvs_obj}")
-                    except hgvs.exceptions.HGVSParseError as e:
+                    except Exception as e:
                         error_msg = f"Could not parse HGVS notation for {current_id}: {hgvs_notation}: {e}"
                         if strict_hgvs:
                             logging.error(error_msg)
@@ -412,7 +441,23 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                 for i, sample_name in enumerate(samples):
                     # Get genotype for this sample
                     gt_type = variant.gt_types[i]  # 0=HOM_REF, 1=HET, 2=HOM_ALT, 3=UNKNOWN
-                    gt_bases = variant.gt_bases[i]  # e.g., "A/C"
+                    
+                    # Handle gt_bases which might be bytes or need decoding
+                    try:
+                        gt_bases = variant.gt_bases[i]  # e.g., "A/C"
+                        if hasattr(gt_bases, 'decode'):
+                            gt_bases = gt_bases.decode('utf-8')
+                    except Exception as e:
+                        logging.debug(f"Error getting gt_bases: {e}")
+                        # Fallback to constructing genotype string from alleles
+                        if gt_type == 0:  # HOM_REF
+                            gt_bases = f"{ref}/{ref}"
+                        elif gt_type == 1:  # HET
+                            gt_bases = f"{ref}/{alt_allele}"
+                        elif gt_type == 2:  # HOM_ALT
+                            gt_bases = f"{alt_allele}/{alt_allele}"
+                        else:  # UNKNOWN
+                            gt_bases = "./."
                     
                     # Parse allele indices
                     if '|' in gt_bases:  # Phased
@@ -467,9 +512,13 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
                     format_data = {}
                     for field in format_fields:
                         try:
-                            format_data[field] = variant.format(field)[i]
-                        except:
-                            pass
+                            value = variant.format(field)[i]
+                            # Convert numpy arrays or other non-string types to Python native types
+                            if hasattr(value, 'tolist'):
+                                value = value.tolist()
+                            format_data[field] = value
+                        except Exception as e:
+                            logging.debug(f"Could not get FORMAT field {field}: {e}")
                     
                     genotypes.append({
                         'sample': sample_name,
