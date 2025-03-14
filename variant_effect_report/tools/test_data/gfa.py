@@ -7,7 +7,12 @@ import time
 import logging
 import random
 from typing import Dict, List, Tuple, Optional
-import gfapy
+
+try:
+    import gfapy
+except ImportError:
+    logging.error("gfapy module not found. Please install it with: pip install gfapy")
+    raise
 
 from .sequence import SequenceHandler
 
@@ -120,8 +125,9 @@ class GFAGenerator:
             
             # Add header with metadata
             if add_metadata:
-                timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-                gfa.add_line(f"H\tVN:Z:1.0\tTS:Z:{timestamp}\tPG:Z:testdata_generator")
+                # Use current timestamp as integer (seconds since epoch)
+                timestamp = int(time.time())
+                gfa.add_line(f"H\tVN:Z:1.0\tTS:i:{timestamp}\tPG:Z:testdata_generator")
             else:
                 gfa.add_line("H\tVN:Z:1.0")
             
