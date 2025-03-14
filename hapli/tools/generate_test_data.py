@@ -360,7 +360,8 @@ def generate_vcf(output_file, sequence_length=10000, num_variants=20, variant_ty
             
             # Write VCF line
             f.write(f"1\t{variant['pos']}\t{variant['id']}\t{variant['ref']}\t{variant['alt']}\t.\tPASS\t")
-            f.write(f"TYPE={variant['type']}\tGT\t{'\t'.join(genotypes)}\n")
+            genotypes_str = "\t".join(genotypes)
+            f.write(f"TYPE={variant['type']}\tGT\t{genotypes_str}\n")
     
     logging.info(f"Generated VCF file: {output_file}")
     logging.info(f"  Variants: {len(variants)}")
