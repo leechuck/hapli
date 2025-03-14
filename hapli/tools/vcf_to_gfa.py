@@ -17,10 +17,9 @@ import time
 from collections import defaultdict
 import multiprocessing as mp
 
-from Bio import SeqIO
+from Bio import SeqIO, Align
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-from Bio import pairwise2
 
 # Required imports
 try:
@@ -705,12 +704,15 @@ def apply_variants_to_segments(segments, variants, segment_offsets, path_segment
                 # Try fuzzy matching for mismatches
                 alignment_score = 0
                 if len(expected_ref) > 0 and len(variant['ref']) > 0:
-                    # Use BioPython for sequence alignment to find best match
-                    alignments = pairwise2.align.localms(
-                        expected_ref, variant['ref'], 
-                        2, -1, -2, -0.5,  # Match, mismatch, gap penalties
-                        one_alignment_only=True
-                    )
+                    # Use BioPython's Align module for sequence alignment to find best match
+                    aligner = Align.PairwiseAligner()
+                    aligner.mode = 'local'
+                    aligner.match_score = 2
+                    aligner.mismatch_score = -1
+                    aligner.open_gap_score = -2
+                    aligner.extend_gap_score = -0.5
+                        
+                    alignments = aligner.align(expected_ref, variant['ref'])
                     if alignments:
                         alignment_score = alignments[0].score / (2 * max(len(expected_ref), len(variant['ref'])))
                 

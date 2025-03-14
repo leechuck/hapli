@@ -4,7 +4,7 @@ Sequence analysis functions for comparing reference and alternate sequences.
 
 import logging
 import re
-from Bio import Seq, Align, pairwise2
+from Bio import Seq, Align
 from Bio.Seq import Seq
 
 def build_path_sequence(segments, path_segments):
@@ -248,17 +248,38 @@ def analyze_sequence_alignment(ref_seq, alt_seq, gap_open=-10, gap_extend=-0.5, 
     # Convert alignment to string representation
     alignment_strings = str(best_alignment).split('\n')
     
-    # The alignment output format is:
-    # Line 0: reference sequence with gaps
-    # Line 1: alignment characters (| for match, space for mismatch)
-    # Line 2: query sequence with gaps
-    if len(alignment_strings) >= 3:
-        ref_aligned = alignment_strings[0]
-        alt_aligned = alignment_strings[2]
-    else:
-        # Fallback if alignment string format is different
-        ref_aligned = ref_seq
-        alt_aligned = alt_seq
+    # Extract aligned sequences
+    ref_aligned = ""
+    alt_aligned = ""
+    
+    # Process the alignment path to get aligned sequences with gaps
+    ref_idx = 0
+    alt_idx = 0
+    
+    for op in best_alignment.path:
+        if op[0] == op[1]:  # Match or mismatch
+            ref_aligned += ref_seq[ref_idx]
+            alt_aligned += alt_seq[alt_idx]
+            ref_idx += 1
+            alt_idx += 1
+        elif op[0] > op[1]:  # Gap in alt sequence
+            ref_aligned += ref_seq[ref_idx]
+            alt_aligned += "-"
+            ref_idx += 1
+        else:  # Gap in ref sequence
+            ref_aligned += "-"
+            alt_aligned += alt_seq[alt_idx]
+            alt_idx += 1
+    
+    # Fallback to the string representation if the above method fails
+    if not ref_aligned or not alt_aligned:
+        if len(alignment_strings) >= 3:
+            ref_aligned = alignment_strings[0]
+            alt_aligned = alignment_strings[2]
+        else:
+            # Last resort fallback
+            ref_aligned = ref_seq
+            alt_aligned = alt_seq
     
     # Identify changes from the alignment
     changes = analyze_alignment_changes(ref_aligned, alt_aligned)
