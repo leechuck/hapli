@@ -15,7 +15,7 @@ pip install hapli
 Clone the repository and install in development mode:
 
 ```bash
-git clone https://github.com/yourusername/hapli.git
+git clone https://github.com/leechuck/hapli.git
 cd hapli
 pip install -e .
 ```
@@ -26,11 +26,14 @@ pip install -e .
 # Install with RDF support
 pip install -e .[rdf]
 
+# Install with sequence alignment support
+pip install -e .[align]
+
 # Install with development dependencies
 pip install -e .[dev]
 
-# Install all dependencies
-pip install -e .[rdf,dev]
+# Install all optional dependencies
+pip install -e .[all]
 ```
 
 ### From Requirements File
@@ -46,7 +49,17 @@ pip install -r requirements.txt
 - Python 3.8 or higher
 - BioPython (for sequence analysis)
 - NumPy (for numerical operations)
-- RDFLib (optional, for RDF output)
+- PyYAML (for configuration)
+- Pandas (for data manipulation)
+
+#### Optional Dependencies
+- RDFLib (for RDF output)
+- NetworkX (for graph operations)
+- Parasail and Edlib (for efficient sequence alignment)
+
+## License
+
+This project is licensed under the GNU General Public License v3 (GPLv3).
 
 ## Usage
 
