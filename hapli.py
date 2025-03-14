@@ -45,7 +45,12 @@ def setup_subcommands(parser):
 def cli():
     """Command-line interface for hapli."""
     parser = argparse.ArgumentParser(description='hapli - Haplotype and Genotype Functional Annotation Tool')
-    setup_subcommands(parser)
+    subparsers = setup_subcommands(parser)
+    
+    # If no arguments are provided, show help
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return 0
     
     args = parser.parse_args()
     
@@ -55,9 +60,11 @@ def cli():
         return vcf_to_gfa.main()
     elif args.command == 'gfa-to-gff3':
         return gfa_to_gff3.main()
-    else:
-        # Default to main hapli functionality
+    elif args.command == 'analyze':
         return main()
+    else:
+        parser.print_help()
+        return 1
 
 if __name__ == "__main__":
     sys.exit(cli())
