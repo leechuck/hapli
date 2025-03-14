@@ -9,6 +9,16 @@ Please use the module directly: python -m hapli.tools.vcf_to_gfa
 import os
 import sys
 import warnings
+import logging
+import time
+import argparse
+from collections import defaultdict
+import multiprocessing as mp
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from Bio import pairwise2
+import traceback
 
 # Add parent directory to path to allow importing from hapli
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
