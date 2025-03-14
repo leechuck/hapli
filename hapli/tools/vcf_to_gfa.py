@@ -22,6 +22,14 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio import pairwise2
 
+# Optional import for HGVS support
+try:
+    import hgvs.parser
+    import hgvs.validator
+    HGVS_AVAILABLE = True
+except ImportError:
+    HGVS_AVAILABLE = False
+
 def setup_logging(debug=False, log_file=None, verbose=False):
     """Configure logging based on debug flag and optional log file."""
     if debug:
@@ -252,6 +260,11 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
     variants = []
     samples = []
     format_fields = []
+    
+    # Initialize HGVS parser if available and needed
+    hgvs_parser = None
+    if strict_hgvs and HGVS_AVAILABLE:
+        hgvs_parser = hgvs.parser.Parser()
     
     start_time = time.time()
     logging.info(f"Parsing VCF file: {vcf_file}")
