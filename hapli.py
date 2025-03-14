@@ -19,11 +19,28 @@ def setup_subcommands(parser):
     main_parser = subparsers.add_parser('analyze', help='Run hapli analysis')
     main_parser.add_argument('gfa_file', help='Input GFA file')
     main_parser.add_argument('gff_file', help='Input GFF3 file with features')
+    main_parser.add_argument('--output', '-o', help='Output file (default: stdout)')
     main_parser.add_argument('--output-dir', default='output', help='Output directory for results')
     main_parser.add_argument('--output-format', choices=['text', 'json', 'rdf'], default='text', 
                             help='Output format for results')
+    main_parser.add_argument('--format', '-f', choices=['text', 'rdf'], default='text',
+                            help='Output format: text (default) or RDF')
+    main_parser.add_argument('--rdf-format', choices=['turtle', 'n3', 'xml', 'json-ld', 'ntriples'], default='n3',
+                            help='RDF serialization format (default: n3)')
+    main_parser.add_argument('--base-uri', default='http://example.org/genomics/',
+                            help='Base URI for RDF output (default: http://example.org/genomics/)')
+    main_parser.add_argument('--consolidated', action='store_true',
+                            help='Output a single consolidated RDF file for all samples')
+    main_parser.add_argument('--sample-reports', action='store_true', 
+                            help='Generate individual reports for each sample')
+    main_parser.add_argument('--output-prefix', help='Prefix for sample report files')
+    main_parser.add_argument('--samples', help='Comma-separated list of sample names to process (default: all)')
+    main_parser.add_argument('--use-alignment', action='store_true',
+                            help='Use sequence alignment for variant effect analysis')
     main_parser.add_argument('--debug', action='store_true', help='Enable debug output')
     main_parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
+    main_parser.add_argument('--log-file', help='Write log to this file')
+    main_parser.add_argument('--save-shex', help='Save ShEx validation schema to the specified file')
     
     # Generate test data command
     test_data_parser = subparsers.add_parser('generate-test-data', help='Generate test data for hapli')
