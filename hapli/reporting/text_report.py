@@ -298,8 +298,6 @@ def generate_variant_effect_report(feature_effects, variants, outfile=None, samp
                 if feature_type not in effects_by_type:
                     effects_by_type[feature_type] = []
                 effects_by_type[feature_type].append(effect)
-            for effect in feature_compound_het_effects:
-                effects_by_type[effect.get('feature_type', 'unknown')].append(effect)
             
             # Process each feature type
             for feature_type, effects in sorted(effects_by_type.items()):
