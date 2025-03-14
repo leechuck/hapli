@@ -24,6 +24,20 @@ from collections import defaultdict
 import cyvcf2
 import tempfile
 
+def reverse_complement(sequence):
+    """Return the reverse complement of a DNA sequence.
+    
+    Args:
+        sequence (str): DNA sequence
+        
+    Returns:
+        str: Reverse complemented sequence
+    """
+    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
+                 'a': 't', 'c': 'g', 'g': 'c', 't': 'a',
+                 'N': 'N', 'n': 'n'}
+    return ''.join(complement.get(base, base) for base in reversed(sequence))
+
 def setup_logging(debug=False, log_file=None, verbose=False):
     """Configure logging based on debug flag and optional log file."""
     if debug:
