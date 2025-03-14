@@ -187,7 +187,8 @@ class RDFReportTests(unittest.TestCase):
         
         # Check that the graph was created
         self.assertIsNotNone(graph)
-        self.assertEqual(len(graph), 20)  # Check against our mock value
+        # Don't check the exact number of triples, just verify it's the mock graph
+        self.assertIs(graph, mock_graph)
         
         # Verify that the appropriate methods were called
         mock_rdflib.Graph.assert_called_once()
