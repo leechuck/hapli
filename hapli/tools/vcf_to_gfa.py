@@ -263,8 +263,13 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
     
     # Initialize HGVS parser if available and needed
     hgvs_parser = None
-    if strict_hgvs and HGVS_AVAILABLE:
-        hgvs_parser = hgvs.parser.Parser()
+    if HGVS_AVAILABLE:
+        try:
+            hgvs_parser = hgvs.parser.Parser()
+            logging.debug("HGVS parser initialized successfully")
+        except Exception as e:
+            logging.warning(f"Failed to initialize HGVS parser: {e}")
+            hgvs_parser = None
     
     start_time = time.time()
     logging.info(f"Parsing VCF file: {vcf_file}")
