@@ -783,20 +783,150 @@ def test_variant_reference_matching():
         # Modify a variant to create a mismatch
         bad_variants[0]['ref'] = 'X' + bad_variants[0]['ref'][1:] if bad_variants[0]['ref'] else 'X'
         
-        is_valid, errors = validate_variants_against_reference(bad_variants, reference_seq)
+        is_valid_bad, errors_bad = validate_variants_against_reference(bad_variants, reference_seq)
         
-        if not is_valid:
+        if not is_valid_bad:
             logging.info("✅ Validation correctly detected mismatched variants")
         else:
             logging.error("❌ Validation failed to detect mismatched variants")
+            is_valid = False
     
-    return is_valid
+    # Run additional tests
+    test_results = run_additional_tests(reference_seq)
+    
+    return is_valid and test_results
+
+def run_additional_tests(reference_seq):
+    """Run additional tests for variant generation and validation."""
+    all_passed = True
+    
+    # Test 1: Test different variant types
+    logging.info("Testing different variant types...")
+    
+    # Create one of each variant type at specific positions
+    variants = []
+    
+    # SNP at position 100
+    variants.append({
+        'id': "test_snp",
+        'type': 'SNP',
+        'pos': 100,
+        'ref': reference_seq[99],
+        'alt': 'A' if reference_seq[99] != 'A' else 'C'
+    })
+    
+    # INS at position 200
+    variants.append({
+        'id': "test_ins",
+        'type': 'INS',
+        'pos': 200,
+        'ref': reference_seq[199],
+        'alt': reference_seq[199] + "ACGT"
+    })
+    
+    # DEL at position 300
+    variants.append({
+        'id': "test_del",
+        'type': 'DEL',
+        'pos': 300,
+        'ref': reference_seq[299:304],
+        'alt': reference_seq[299]
+    })
+    
+    # Validate variants
+    is_valid, errors = validate_variants_against_reference(variants, reference_seq)
+    
+    if is_valid:
+        logging.info("✅ Test passed: All variant types match reference sequence")
+    else:
+        logging.error("❌ Test failed: Some variant types do not match reference sequence")
+        for error in errors:
+            logging.error(f"  - {error}")
+        all_passed = False
+    
+    # Test 2: Test boundary conditions
+    logging.info("Testing boundary conditions...")
+    
+    boundary_variants = []
+    
+    # Variant at position 1 (start of sequence)
+    boundary_variants.append({
+        'id': "test_start",
+        'type': 'SNP',
+        'pos': 1,
+        'ref': reference_seq[0],
+        'alt': 'A' if reference_seq[0] != 'A' else 'C'
+    })
+    
+    # Variant at end of sequence
+    boundary_variants.append({
+        'id': "test_end",
+        'type': 'SNP',
+        'pos': len(reference_seq),
+        'ref': reference_seq[-1],
+        'alt': 'A' if reference_seq[-1] != 'A' else 'C'
+    })
+    
+    # Validate boundary variants
+    is_valid, errors = validate_variants_against_reference(boundary_variants, reference_seq)
+    
+    if is_valid:
+        logging.info("✅ Test passed: Boundary variants match reference sequence")
+    else:
+        logging.error("❌ Test failed: Boundary variants do not match reference sequence")
+        for error in errors:
+            logging.error(f"  - {error}")
+        all_passed = False
+    
+    # Test 3: Test invalid variants
+    logging.info("Testing invalid variants...")
+    
+    invalid_variants = []
+    
+    # Variant with position beyond sequence length
+    invalid_variants.append({
+        'id': "test_beyond_end",
+        'type': 'SNP',
+        'pos': len(reference_seq) + 10,
+        'ref': 'A',
+        'alt': 'C'
+    })
+    
+    # Variant with incorrect reference base
+    invalid_variants.append({
+        'id': "test_wrong_ref",
+        'type': 'SNP',
+        'pos': 500,
+        'ref': 'X',  # Deliberately wrong
+        'alt': 'C'
+    })
+    
+    # Deletion that extends beyond sequence end
+    if len(reference_seq) > 4990:
+        invalid_variants.append({
+            'id': "test_del_beyond",
+            'type': 'DEL',
+            'pos': len(reference_seq) - 5,
+            'ref': reference_seq[-5:] + "EXTRA",  # Extends beyond sequence
+            'alt': reference_seq[-5]
+        })
+    
+    # Validate invalid variants - these should fail
+    is_valid, errors = validate_variants_against_reference(invalid_variants, reference_seq)
+    
+    if not is_valid:
+        logging.info("✅ Test passed: Invalid variants correctly detected")
+    else:
+        logging.error("❌ Test failed: Invalid variants not detected")
+        all_passed = False
+    
+    return all_passed
 
 if __name__ == "__main__":
     # Run tests if requested with --test flag
     if len(sys.argv) > 1 and sys.argv[1] == '--test':
         setup_logging(debug=True)
-        test_variant_reference_matching()
-        sys.exit(0)
+        success = test_variant_reference_matching()
+        sys.exit(0 if success else 1)
     
     sys.exit(main())
