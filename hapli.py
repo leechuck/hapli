@@ -23,7 +23,31 @@ def setup_subcommands(parser):
     test_data_parser.add_argument('--output-dir', default='testdata', help='Output directory for test files')
     test_data_parser.add_argument('--prefix', default='test', help='Prefix for output files')
     test_data_parser.add_argument('--length', type=int, default=10000, help='Length of reference sequence')
+    
+    # File-specific options
+    test_data_parser.add_argument('--gfa', action='store_true', help='Generate GFA file')
+    test_data_parser.add_argument('--gff3', action='store_true', help='Generate GFF3 file')
+    test_data_parser.add_argument('--vcf', action='store_true', help='Generate VCF file')
+    test_data_parser.add_argument('--fasta', action='store_true', help='Generate FASTA file')
+    
+    # GFA options
+    test_data_parser.add_argument('--segments', type=int, default=5, help='Number of segments in GFA')
+    test_data_parser.add_argument('--variants', type=int, default=10, help='Number of variants')
+    test_data_parser.add_argument('--paths', type=int, default=2, help='Number of paths in GFA')
+    
+    # GFF3 options
+    test_data_parser.add_argument('--genes', type=int, default=5, help='Number of genes in GFF3')
+    test_data_parser.add_argument('--exons', type=int, default=3, help='Number of exons per gene')
+    
+    # VCF options
+    test_data_parser.add_argument('--samples', type=int, default=2, help='Number of samples in VCF')
+    test_data_parser.add_argument('--unphased', action='store_true', help='Generate unphased genotypes')
+    
+    # Debug and logging options
     test_data_parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    test_data_parser.add_argument('--verbose', action='store_true', help='Enable verbose output without full debug')
+    test_data_parser.add_argument('--log-file', help='Write log to this file')
+    test_data_parser.add_argument('--seed', type=int, help='Random seed for reproducible data generation')
     
     # VCF to GFA command
     vcf_to_gfa_parser = subparsers.add_parser('vcf-to-gfa', help='Convert VCF variants to GFA paths')
