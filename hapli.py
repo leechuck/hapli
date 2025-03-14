@@ -17,6 +17,13 @@ def setup_subcommands(parser):
     
     # Main hapli command (default)
     main_parser = subparsers.add_parser('analyze', help='Run hapli analysis')
+    main_parser.add_argument('gfa_file', help='Input GFA file')
+    main_parser.add_argument('gff_file', help='Input GFF3 file with features')
+    main_parser.add_argument('--output-dir', default='output', help='Output directory for results')
+    main_parser.add_argument('--output-format', choices=['text', 'json', 'rdf'], default='text', 
+                            help='Output format for results')
+    main_parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    main_parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
     
     # Generate test data command
     test_data_parser = subparsers.add_parser('generate-test-data', help='Generate test data for hapli')
@@ -109,7 +116,8 @@ def cli():
         # This is a fallback for when the special handling above doesn't apply
         return gfa_to_gff3.main()
     elif args.command == 'analyze':
-        return main()
+        # Pass the arguments to the main function
+        return main(args)
     else:
         parser.print_help()
         return 1
