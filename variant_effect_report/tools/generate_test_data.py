@@ -10,13 +10,11 @@ import sys
 import logging
 from typing import List, Dict, Tuple, Optional
 
-from variant_effect_report.core.test_data import (
-    SimpleGFAGenerator, 
-    load_reference_sequence,
-    parse_var_types,
-    parse_size_range
-)
 from variant_effect_report.core.utils import setup_logging
+from variant_effect_report.tools.test_data.sequence import SequenceHandler, load_reference_sequence
+from variant_effect_report.tools.test_data.variants import parse_var_types, parse_size_range
+from variant_effect_report.tools.test_data.gfa import GFAGenerator
+from variant_effect_report.tools.test_data.validation import BiologicalValidator
 
 
 def main():
@@ -69,6 +67,13 @@ def main():
     sample_group.add_argument('--phased', action='store_true',
                         help='Generate phased genotypes (|) instead of unphased (/) in the VCF')
     
+    # Validation options
+    validation_group = parser.add_argument_group('Validation Options')
+    validation_group.add_argument('--validate', action='store_true',
+                               help='Validate biological consistency of generated variants')
+    validation_group.add_argument('--strict', action='store_true',
+                               help='Fail if validation errors are found')
+    
     # Debug options
     debug_group = parser.add_argument_group('Debug Options')
     debug_group.add_argument('--debug', action='store_true', help='Enable debug output')
@@ -80,103 +85,151 @@ def main():
     # Setup logging
     logger = setup_logging(debug=args.debug, log_file=args.log_file, verbose=args.verbose)
     
-    # Create output directory if it doesn't exist
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
-    
-    # Determine which files to generate
-    generate_all = not (args.gfa or args.vcf or args.fasta)
-    
-    # Parse variant types and size ranges
     try:
-        var_types = parse_var_types(args.var_types)
-    except ValueError as e:
-        parser.error(str(e))
-        return 1
-    
-    size_ranges = parse_size_range(args.size_ranges)
-    
-    # Create file paths
-    gfa_path = os.path.join(args.output_dir, f"{args.prefix}.gfa")
-    vcf_path = os.path.join(args.output_dir, f"{args.prefix}.vcf")
-    fasta_path = os.path.join(args.output_dir, f"{args.prefix}.fa")
-    
-    # Load or generate reference sequence
-    ref_seq = None
-    sequence_id = "REF"
-    
-    if args.reference:
-        try:
-            logging.info(f"Loading reference sequence from {args.reference}")
-            sequence_id, ref_seq = load_reference_sequence(args.reference)
-            logging.info(f"Loaded reference sequence '{sequence_id}' of length {len(ref_seq)}")
-        except Exception as e:
-            parser.error(f"Error loading reference sequence: {str(e)}")
-            return 1
-    else:
-        logging.info(f"Generating random reference sequence of length {args.seq_length}")
-    
-    # Prepare sample list for VCF
-    samples = []
-    if args.samples:
-        samples = [s.strip() for s in args.samples.split(',') if s.strip()]
-    
-    if args.num_samples > 0:
-        # Add auto-generated sample names
-        existing_count = len(samples)
-        for i in range(1, args.num_samples + 1):
-            samples.append(f"Sample{existing_count + i}")
-    
-    if samples:
-        logging.info(f"VCF will include {len(samples)} samples: {', '.join(samples)}")
-        if args.phased:
-            logging.info("Genotypes will be phased")
-        else:
-            logging.info("Genotypes will be unphased")
-    
-    # Create generator with reference or random sequence
-    generator = SimpleGFAGenerator(
-        ref_seq=ref_seq,
-        seq_length=args.seq_length,
-        node_size=args.node_size,
-        seed=args.seed,
-        sequence_id=sequence_id
-    )
-    
-    # Generate GFA if requested or if generating all
-    if args.gfa or generate_all:
-        logging.info(f"Exporting GFA to {gfa_path}")
-        generator.export_gfa(gfa_path)
-    
-    # Generate FASTA if requested or if generating all
-    if args.fasta or generate_all:
-        logging.info(f"Exporting reference FASTA to {fasta_path}")
-        generator.export_fasta(fasta_path)
-    
-    # Generate VCF if requested or if generating all
-    if args.vcf or generate_all:
-        logging.info(f"Generating {args.num_variants} structural variants of types: {', '.join(var_types)}")
+        # Create output directory if it doesn't exist
+        if not os.path.exists(args.output_dir):
+            os.makedirs(args.output_dir)
         
+        # Determine which files to generate
+        generate_all = not (args.gfa or args.vcf or args.fasta)
+        
+        # Parse variant types and size ranges
+        try:
+            var_types = parse_var_types(args.var_types)
+            logger.info(f"Using variant types: {', '.join(var_types)}")
+        except ValueError as e:
+            logger.error(str(e))
+            return 1
+        
+        size_ranges = parse_size_range(args.size_ranges)
         if size_ranges:
             size_info = ", ".join([f"{k}:{v[0]}-{v[1]}" for k, v in size_ranges.items()])
-            logging.info(f"Using custom size ranges: {size_info}")
+            logger.info(f"Using custom size ranges: {size_info}")
         
-        variants = generator.generate_vcf_variants(
-            num_variants=args.num_variants,
-            var_types=var_types,
-            size_ranges=size_ranges,
-            hgvs_prefix=args.hgvs_prefix
+        # Create file paths
+        gfa_path = os.path.join(args.output_dir, f"{args.prefix}.gfa")
+        vcf_path = os.path.join(args.output_dir, f"{args.prefix}.vcf")
+        fasta_path = os.path.join(args.output_dir, f"{args.prefix}.fa")
+        
+        # Load or generate reference sequence
+        ref_seq = None
+        sequence_id = "REF"
+        
+        if args.reference:
+            try:
+                logger.info(f"Loading reference sequence from {args.reference}")
+                sequence_id, ref_seq = load_reference_sequence(args.reference)
+                logger.info(f"Loaded reference sequence '{sequence_id}' of length {len(ref_seq)}")
+            except Exception as e:
+                logger.error(f"Error loading reference sequence: {str(e)}")
+                return 1
+        else:
+            logger.info(f"Generating random reference sequence of length {args.seq_length}")
+            seq_handler = SequenceHandler(seed=args.seed)
+            ref_seq = seq_handler.generate_random_sequence(args.seq_length)
+            logger.info(f"Generated random sequence of length {len(ref_seq)}")
+        
+        # Prepare sample list for VCF
+        samples = []
+        if args.samples:
+            samples = [s.strip() for s in args.samples.split(',') if s.strip()]
+        
+        if args.num_samples > 0:
+            # Add auto-generated sample names
+            existing_count = len(samples)
+            for i in range(1, args.num_samples + 1):
+                samples.append(f"Sample{existing_count + i}")
+        
+        if samples:
+            logger.info(f"VCF will include {len(samples)} samples: {', '.join(samples)}")
+            if args.phased:
+                logger.info("Genotypes will be phased")
+            else:
+                logger.info("Genotypes will be unphased")
+        
+        # Create GFA generator
+        generator = GFAGenerator(
+            ref_seq=ref_seq,
+            node_size=args.node_size,
+            sequence_id=sequence_id,
+            seed=args.seed
         )
         
-        logging.info(f"Exporting VCF to {vcf_path}")
-        generator.export_vcf(variants, vcf_path, args.contig_id, samples, args.phased)
+        # Generate FASTA if requested or if generating all
+        if args.fasta or generate_all:
+            logger.info(f"Exporting reference FASTA to {fasta_path}")
+            try:
+                generator.export_fasta(fasta_path)
+                logger.info(f"Exported FASTA to {fasta_path}")
+            except Exception as e:
+                logger.error(f"Failed to write FASTA file: {str(e)}")
+                return 1
         
-        # Report details of variants
-        logging.info("\nGenerated variants:")
-        for i, var in enumerate(variants):
-            logging.info(f"{i+1}. {var['type']} at position {var['pos']}: {var['hgvs']}")
-    
-    return 0
+        # Generate GFA if requested or if generating all
+        if args.gfa or generate_all:
+            logger.info(f"Generating GFA with average node size {args.node_size}")
+            try:
+                generator.export_gfa(gfa_path)
+                logger.info(f"Exported GFA to {gfa_path}")
+            except Exception as e:
+                logger.error(f"Failed to generate GFA: {str(e)}")
+                return 1
+        
+        # Generate VCF if requested or if generating all
+        if args.vcf or generate_all:
+            logger.info(f"Generating {args.num_variants} variants of types: {', '.join(var_types)}")
+            
+            try:
+                # Generate variants
+                variants = generator.generate_vcf_variants(
+                    num_variants=args.num_variants,
+                    var_types=var_types,
+                    size_ranges=size_ranges,
+                    hgvs_prefix=args.hgvs_prefix
+                )
+                
+                # Validate variants if requested
+                if args.validate:
+                    logger.info("Validating biological consistency of variants...")
+                    is_valid, errors = BiologicalValidator.validate_variants(variants, ref_seq)
+                    
+                    if not is_valid:
+                        for error in errors:
+                            logger.warning(error)
+                        
+                        if args.strict:
+                            logger.error("Validation failed and --strict is enabled. Exiting.")
+                            return 1
+                        else:
+                            logger.warning("Validation found issues but continuing as --strict is not enabled.")
+                    else:
+                        logger.info("All variants passed biological validation.")
+                
+                # Export VCF
+                logger.info(f"Exporting VCF to {vcf_path}")
+                generator.export_vcf(variants, vcf_path, args.contig_id, samples, args.phased)
+                logger.info(f"Exported VCF to {vcf_path}")
+                
+                # Report details of variants
+                logger.info("\nGenerated variants:")
+                for i, var in enumerate(variants):
+                    logger.info(f"{i+1}. {var['type']} at position {var['pos']}: {var['hgvs']}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to generate VCF: {str(e)}")
+                if args.debug:
+                    import traceback
+                    logger.debug(traceback.format_exc())
+                return 1
+        
+        return 0
+        
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        if args.debug:
+            import traceback
+            logger.debug(traceback.format_exc())
+        return 1
 
 
 if __name__ == "__main__":
