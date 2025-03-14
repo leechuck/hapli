@@ -4,7 +4,6 @@ Feature analysis functions for identifying effects on genomic features.
 
 import logging
 from collections import defaultdict
-from collections import defaultdict
 
 def identify_first_cds_in_genes(features, feature_by_id, children_by_parent):
     """Identify the first CDS feature in each gene to check for start codon changes."""
