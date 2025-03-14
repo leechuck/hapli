@@ -842,5 +842,9 @@ PREFIX position: <http://example.org/genomics/position/>
 """
 
 # Import needed for consolidated report
-from hapli.analysis.sequence_analysis import build_path_sequence, analyze_haplotype_differences
+from hapli.analysis.sequence_analysis import (
+    build_path_sequence, 
+    analyze_haplotype_differences,
+    analyze_haplotype_differences_with_alignment
+)
 from hapli.analysis.feature_analysis import analyze_sample_haplotypes
