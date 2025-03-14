@@ -127,18 +127,24 @@ class RDFReportTests(unittest.TestCase):
         self.assertIn('Variant', schema)
         self.assertIn('Feature', schema)
         
-    def test_consolidated_rdf_report(self):
+    @patch('hapli.reporting.rdf_report.rdflib')
+    @patch('hapli.reporting.rdf_report.build_path_sequence')
+    def test_consolidated_rdf_report(self, mock_build_path, mock_rdflib):
         """Test creating a consolidated RDF report."""
-        # Skip if RDFLib is not available
-        if not RDFLIB_AVAILABLE:
-            self.skipTest("RDFLib not available")
+        # Setup mock graph
+        mock_graph = MagicMock()
+        mock_rdflib.Graph.return_value = mock_graph
+        mock_graph.__len__.return_value = 20  # Simulate some triples in the graph
+        
+        # Setup mock build_path_sequence to return a sequence and length
+        mock_build_path.return_value = ('ACGT', 4)
             
         # Test data
         variants = [{'id': 'var1', 'type': 'SNP', 'pos': 100, 'ref': 'A', 'alt': 'G'}]
         features = [{'id': 'gene1', 'type': 'gene', 'start': 50, 'end': 150, 'strand': '+', 'attributes': {'ID': 'gene1', 'Name': 'test_gene'}}]
         
         # Create sample data with proper structure
-        samples = {'sample1': {'haplotypes': ['hap1', 'hap2'], 'paths': ['ALT']}}
+        samples = {'sample1': {'haplotypes': ['hap1', 'hap2']}}
         haplotypes = {'hap1': {'variants': ['var1']}}
         
         # Create paths in the format expected by the function
@@ -167,7 +173,11 @@ class RDFReportTests(unittest.TestCase):
         
         # Check that the graph was created
         self.assertIsNotNone(graph)
-        self.assertGreater(len(graph), 0)  # Just check that there are triples, don't check exact count
+        self.assertEqual(len(graph), 20)  # Check against our mock value
+        
+        # Verify that the appropriate methods were called
+        mock_rdflib.Graph.assert_called_once()
+        mock_build_path.assert_called()  # Verify build_path_sequence was called
 
 if __name__ == '__main__':
     unittest.main()
