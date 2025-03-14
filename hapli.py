@@ -76,6 +76,26 @@ def cli():
         parser.print_help()
         return 0
     
+    # Special handling for vcf-to-gfa and gfa-to-gff3 commands
+    if len(sys.argv) > 1 and sys.argv[1] == 'vcf-to-gfa' and len(sys.argv) >= 5:
+        # Extract the positional arguments
+        gfa_file = sys.argv[2]
+        vcf_file = sys.argv[3]
+        output_file = sys.argv[4]
+        
+        # Modify sys.argv to only include the command and positional args
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        return vcf_to_gfa.main()
+    
+    elif len(sys.argv) > 1 and sys.argv[1] == 'gfa-to-gff3' and len(sys.argv) >= 4:
+        # Extract the positional arguments
+        gfa_file = sys.argv[2]
+        output_file = sys.argv[3]
+        
+        # Modify sys.argv to only include the command and positional args
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        return gfa_to_gff3.main()
+    
     args = parser.parse_args()
     
     if args.command == 'generate-test-data':
@@ -83,10 +103,10 @@ def cli():
         sys.argv[0] = 'generate_test_data'
         return generate_test_data.main()
     elif args.command == 'vcf-to-gfa':
-        # Don't modify sys.argv, just call the main function directly
+        # This is a fallback for when the special handling above doesn't apply
         return vcf_to_gfa.main()
     elif args.command == 'gfa-to-gff3':
-        # Don't modify sys.argv, just call the main function directly
+        # This is a fallback for when the special handling above doesn't apply
         return gfa_to_gff3.main()
     elif args.command == 'analyze':
         return main()
