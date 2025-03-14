@@ -311,7 +311,11 @@ def parse_vcf(vcf_file, strict_hgvs=False, max_variants=None, chrom_filter=None)
             logging.info(f"Found {len(samples)} samples in VCF: {', '.join(samples)}")
         
         # Get format fields
-        format_fields = vcf.FORMAT
+        format_fields = []
+        try:
+            format_fields = vcf.FORMAT
+        except AttributeError:
+            logging.warning("VCF file does not have FORMAT attribute, using empty format fields list")
         
         # Process variants
         for variant in vcf:
