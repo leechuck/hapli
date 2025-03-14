@@ -431,6 +431,11 @@ def generate_test_dataset(output_dir, prefix="test", sequence_length=10000):
 
 def main():
     """Main function to run the test data generator."""
+    # Check if we're being called from hapli.py
+    if len(sys.argv) > 1 and sys.argv[1] == 'generate-test-data':
+        # Remove the subcommand from sys.argv
+        sys.argv.pop(1)
+    
     parser = argparse.ArgumentParser(description='Generate test data for hapli.')
     parser.add_argument('--output-dir', default='testdata', help='Output directory for test files')
     parser.add_argument('--prefix', default='test', help='Prefix for output files')

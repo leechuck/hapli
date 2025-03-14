@@ -79,6 +79,8 @@ def cli():
     args = parser.parse_args()
     
     if args.command == 'generate-test-data':
+        # Pass the arguments directly to generate_test_data.main
+        sys.argv[0] = 'generate_test_data'
         return generate_test_data.main()
     elif args.command == 'vcf-to-gfa':
         return vcf_to_gfa.main()
